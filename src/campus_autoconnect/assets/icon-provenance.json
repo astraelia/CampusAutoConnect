@@ -1,0 +1,23 @@
+{
+  "source": "校园 Wi‑Fi 萌系连接助手.png",
+  "source_sha256": "474c0bcbc0307f802ea788e8d8315c508474de1fd1d4b007d0ab0211b80982b8",
+  "size": [
+    1254,
+    1254
+  ],
+  "removed_edge_black_pixels": 75711,
+  "isolated_outer_speck_pixels": 3,
+  "rgb_unchanged_before_scaling": true,
+  "non_background_alpha_unchanged": true,
+  "ico_sizes": [
+    16,
+    24,
+    32,
+    48,
+    64,
+    128,
+    256
+  ],
+  "png_sha256": "27803789e14505f840eb8d5532802acee4b4a29ed496b99280fdc03d8354f755",
+  "ico_sha256": "e883e4c44f47f986d5ffaca15c84a04376315f3e9f5a7df5d39da245c4ed7c11"
+}

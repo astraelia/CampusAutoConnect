@@ -1,0 +1,53 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "campus-autoconnect"
+version = "1.0.1"
+description = "Windows 校园网连接助手"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "PySide6>=6.8,<7",
+  "httpx>=0.28,<0.29",
+  "keyring>=25.6,<26",
+  "playwright==1.64.0",
+]
+
+[project.scripts]
+campus = "campus_autoconnect.cli.main:main"
+
+[project.gui-scripts]
+campus-gui = "campus_autoconnect.ui.app:main"
+
+[dependency-groups]
+dev = [
+  "pytest>=8,<10", "pytest-qt>=4.4,<5", "pytest-cov>=6,<8", "ruff>=0.11,<1",
+  "trustme>=1.2,<2",
+]
+build = ["pyinstaller>=6.22,<7"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/campus_autoconnect"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+qt_api = "pyside6"
+addopts = "-ra --strict-markers"
+filterwarnings = [
+  "error::pytest.PytestUnhandledThreadExceptionWarning",
+  "error::pytest.PytestUnraisableExceptionWarning",
+]
+markers = [
+  "mock: synthetic data or local mock server, not a real BJUT authentication",
+  "windows: opt-in non-authenticating Windows host smoke checks",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+extend-exclude = [".cache"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
