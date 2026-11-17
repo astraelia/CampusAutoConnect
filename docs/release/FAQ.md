@@ -9,7 +9,7 @@
 | already_authenticated | 当前互联网已可用，本次跳过登录，不能验证新密码 |
 | untrusted_network | 当前SSID未知、停用或有歧义，检查精确名称和唯一启用档案 |
 | untrusted_target | 检查认证页、API源地址、端口、HTTPS主机和HTTP许可，不扩大为通配信任 |
-| protocol_unverified / protocol_changed | 入口或实时分支未支持，做无凭据深入诊断，必要时本人网页对照抓包 |
+| protocol_unverified / protocol_changed | 入口或实时分支无法验证。运行“全面诊断”，必要时用浏览器核对登录页面 |
 | session_fields_invalid / session_ip_mismatch | 页面字段不完整或IPv4与当前Wi-Fi不符，等网络稳定后复查 |
 | session_mac_invalid / zero_mac_permission_required | 区分格式错误与全零许可，只兼容页面实际全零，不补造字段 |
 | session_vlan_invalid | VLAN格式或范围不支持；0已兼容，不擅自改成其他值 |
@@ -28,6 +28,6 @@
 | 取消/退出有等待 | 正在进行的Windows/DNS/HTTP调用需协作完成，不强杀正在认证进程 |
 | 连接较慢 | 分别观察Windows网络就绪、原生/回退查询、Portal与验证时间；API毫秒数不是完整认证耗时 |
 
-理论范围是配置完整且认证流程兼容的本部网络；中蓝公寓宿舍已实测自动连接，本部其他区域及其他校区未验证。1.0.1整段重启耗时、换机、睡眠和长期驻留需独立测试。
+中蓝公寓 Wi-Fi 有旧版现场记录。新版北工大有线真实登录、插拔切换及不同校区的兼容性待现场验证。
 
 反馈前完整退出旧版，确认当前版本和操作时间，用[反馈模板](FEEDBACK_TEMPLATE.md)描述步骤与错误码。不要为复现强制断开正在远程使用的网络，不上传私人配置或原始抓包。

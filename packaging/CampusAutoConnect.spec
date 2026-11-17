@@ -1,6 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 from pathlib import Path
 import os
+import ssl
 import sys
 
 from PyInstaller.utils.hooks import collect_all
@@ -8,6 +9,10 @@ pw_datas, pw_binaries, pw_imports = collect_all("playwright")
 root = Path(SPECPATH).parent
 assets = root / 'src' / 'campus_autoconnect' / 'assets'
 windows = Path(os.environ.get('SYSTEMROOT', r'C:\Windows'))
+# Some build runtimes load a rejected-CA bundle beside ssl.py on every TLS
+# context creation. Preserve that trust policy in the frozen runtime.
+tls_policy = Path(ssl.__file__).with_name('codex-rejected-cas.pem')
+tls_data = [(str(tls_policy), '.')] if tls_policy.is_file() else []
 # Build tools on PATH may ship incompatible DLLs with Windows-system names (e.g. ICU).
 os.environ['PATH'] = os.pathsep.join(str(path) for path in (
     Path(sys.prefix) / 'Scripts', Path(sys.base_prefix), Path(sys.base_prefix) / 'DLLs',
@@ -17,7 +22,7 @@ a = Analysis(
     [str(root / 'src' / 'campus_autoconnect' / 'entry.py')],
     pathex=[str(root / 'src')],
     binaries=pw_binaries,
-    datas=[(str(assets), 'campus_autoconnect/assets'), *pw_datas],
+    datas=[(str(assets), 'campus_autoconnect/assets'), *pw_datas, *tls_data],
     hiddenimports=['keyring.backends.Windows', 'PySide6.QtNetwork', *pw_imports],
     hookspath=[], hooksconfig={}, runtime_hooks=[],
     excludes=['tkinter', 'pytest', 'PySide6.QtQml', 'PySide6.QtQuick',
@@ -50,5 +55,5 @@ cli = EXE(
 )
 collection = COLLECT(
     gui, cli, a.binaries, a.datas, strip=False, upx=False,
-    name='CampusAutoConnect-1.0.1-win-x64',
+    name='CampusAutoConnect-1.3.0-win-x64',
 )

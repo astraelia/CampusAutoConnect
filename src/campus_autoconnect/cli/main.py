@@ -4,18 +4,27 @@ import argparse
 import getpass
 import json
 import sys
+import threading
 import uuid
 import warnings
 from collections.abc import Sequence
+from dataclasses import replace
 from pathlib import Path
 
 from campus_autoconnect.core.errors import CampusError
-from campus_autoconnect.core.models import AuthState, Credentials, NetworkProfile
+from campus_autoconnect.core.models import (
+    AuthState,
+    Credentials,
+    ErrorCode,
+    LinkType,
+    NetworkProfile,
+)
 from campus_autoconnect.core.portal import (
     normalize_authority,
     normalize_bjut_endpoints,
     profile_setup_summary,
 )
+from campus_autoconnect.core.profiles import new_wired_profile
 from campus_autoconnect.services.application import ApplicationServices, build_services
 
 
@@ -53,6 +62,11 @@ def parser() -> argparse.ArgumentParser:
     add.add_argument(
         "--auto-auth", action="store_true", help="允许此档案自动认证；还需全局开关及后台"
     )
+    wired = profile.add_parser("add-wired", help="为当前物理有线连接添加 HTTPS 登录网址")
+    wired.add_argument("--portal-page", required=True, help="亲自核对的 HTTPS 登录网址")
+    wired.add_argument("--name", default="有线网络", help="显示名称")
+    wired.add_argument("--reference", default="shared", help="凭据引用，默认 shared")
+    wired.add_argument("--auto-auth", action="store_true", help="允许此档案自动认证")
     remove = profile.add_parser("remove", help="删除档案，不删除共享凭据")
     remove.add_argument("profile_id", help="profiles 命令显示的档案 ID")
     credentials = commands.add_parser("credentials", help="Windows 安全凭据").add_subparsers(
@@ -66,7 +80,7 @@ def parser() -> argparse.ArgumentParser:
         sub = credentials.add_parser(name, help=help_text)
         sub.add_argument("--reference", default="shared", help="凭据引用，默认 shared")
     commands.add_parser("login", help="在当前可信档案执行一次认证，绝不自动重试")
-    commands.add_parser("diagnose", help="检测后显示脱敏诊断，不包含网络标识或秘密")
+    commands.add_parser("diagnose", help="运行全面脱敏诊断，不读取凭据、不登录")
     automation = commands.add_parser(
         "automation", help="全局自动认证开关，默认关闭"
     ).add_subparsers(dest="automation_command", required=True)
@@ -111,8 +125,9 @@ def run(args: argparse.Namespace, services: ApplicationServices) -> int:
         case "profiles":
             profiles = services.profiles.list()
             for p in profiles:
+                link = "有线" if p.is_wired else f"SSID={p.ssid}"
                 print(
-                    f"{p.profile_id} | {p.display_name} | SSID={p.ssid} | "
+                    f"{p.profile_id} | {p.display_name} | {link} | "
                     f"启用={p.enabled} | 档案自动认证={p.auto_auth} | "
                     f"凭据={p.credential_ref} | {profile_setup_summary(p)}"
                 )
@@ -136,11 +151,24 @@ def run(args: argparse.Namespace, services: ApplicationServices) -> int:
                     allow_http_auth=args.allow_http_auth,
                     allow_zero_mac=args.allow_zero_mac,
                 )
-                services.profiles.upsert(profile)
-                print(f"档案已保存，ID：{profile.profile_id}")
+            elif args.profile_command == "add-wired":
+                snapshot = services.authentication.network.snapshot()
+                adapter = snapshot.selected
+                if adapter is None or adapter.link != LinkType.ETHERNET:
+                    raise CampusError(ErrorCode.UNTRUSTED_NETWORK, "未识别唯一可用的物理有线连接。")
+                profile = replace(
+                    new_wired_profile(adapter, args.portal_page),
+                    display_name=args.name,
+                    credential_ref=args.reference,
+                    auto_auth=args.auto_auth,
+                )
             else:
                 services.profiles.remove(args.profile_id)
                 print("档案已删除。共享凭据未删除。")
+                return 0
+            check = services.save_profile_and_check(profile)
+            print(f"档案已保存，ID：{profile.profile_id}")
+            print(check.message)
         case "credentials":
             if args.credential_command == "set":
                 value = _read_credentials()
@@ -155,12 +183,23 @@ def run(args: argparse.Namespace, services: ApplicationServices) -> int:
         case "scan":
             snapshot = services.authentication.network.snapshot()
             for a in snapshot.adapters:
-                print(f"接口 {a.index} | {a.name} | 连接={a.connected} | SSID={a.ssid or '未识别'}")
+                print(f"接口 {a.index} | {a.name} | 类型={a.link.value} | 连接={a.connected}")
+                if a.ssid is not None:
+                    print(f"  SSID={a.ssid}")
                 print(f"  IPv4={', '.join(a.ipv4) or '—'} | IPv6={', '.join(a.ipv6) or '—'}")
                 print(f"  网关={', '.join(a.gateways) or '—'} | DNS={', '.join(a.dns) or '—'}")
             for warning in snapshot.warnings:
                 print(f"网络查询提示：{warning}")
-        case "status" | "login" | "diagnose":
+        case "diagnose":
+            report = services.diagnose(threading.Event())
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            result = report.get("diagnostic", {}).get("deep_check", report)
+            return (
+                0
+                if result.get("state") in {AuthState.AUTHENTICATED, AuthState.AUTH_REQUIRED}
+                else 1
+            )
+        case "status" | "login":
             method = (
                 services.authentication.login
                 if args.command == "login"
@@ -170,12 +209,10 @@ def run(args: argparse.Namespace, services: ApplicationServices) -> int:
             services.record_result(result)
             if services.log_unavailable:
                 print("提示：用户日志目录不可写，本次结果仍可查看。", file=sys.stderr)
-            if args.command == "diagnose":
-                print(json.dumps(services.diagnostics(), ensure_ascii=False, indent=2))
-            else:
-                print(f"{result.state.value} [{result.code.value}] {result.message}")
-                if result.network.ssid:
-                    print(f"当前 SSID：{result.network.ssid}")
+            print(f"{result.state.value} [{result.code.value}] {result.message}")
+            adapter = result.network.selected
+            if adapter is not None:
+                print(f"当前连接：{'有线' if adapter.link == LinkType.ETHERNET else adapter.ssid}")
             return 0 if result.state in {AuthState.AUTHENTICATED, AuthState.AUTH_REQUIRED} else 1
         case "automation" | "monitor" | "startup":
             automation = services.automation

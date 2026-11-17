@@ -7,12 +7,24 @@ from urllib.parse import urlsplit
 from campus_autoconnect.core.errors import CampusError
 from campus_autoconnect.core.models import ErrorCode, NetworkProfile, ProfileIssue
 
+BJUT_WIRED_HOST = "lgn.bjut.edu.cn"
+BJUT_WIRED_URL = f"https://{BJUT_WIRED_HOST}/"
+BJUT_WIRED_PAGE = BJUT_WIRED_URL + "a79.htm"
+BJUT_WIRED_STATUS = BJUT_WIRED_URL + "drcom/chkstatus"
+BJUT_WIRED_LOGIN = BJUT_WIRED_URL + "drcom/login"
+BJUT_WIRED_API = f"https://{BJUT_WIRED_HOST}:802/eportal/"
+BJUT_WIRED_CONFIG = BJUT_WIRED_API + "portal/page/loadConfig"
+_WIRED_TEMPLATE = re.compile(
+    re.escape(BJUT_WIRED_API) + r"extern/[A-Za-z0-9_-]{1,48}/[A-Za-z0-9_-]{1,48}/pc\.js"
+)
+
 PROFILE_ISSUE_LABELS = {
     ProfileIssue.DISABLED: "档案已停用",
     ProfileIssue.PAGE_MISSING: "未填写认证页地址",
     ProfileIssue.API_MISSING: "未填写认证服务地址",
     ProfileIssue.HTTP_PERMISSION: "尚未明确允许 HTTP 认证",
     ProfileIssue.HTTPS_TRUST: "HTTPS 认证目标尚未加入精确信任列表",
+    ProfileIssue.WIRED_PROTOCOL: "此入口的自动认证协议待核对，可手动打开",
 }
 
 
@@ -79,8 +91,48 @@ def normalize_bjut_endpoints(page_url: str, api_origin: str) -> tuple[str, str]:
     return normalized[0], normalized[1]
 
 
+def normalize_wired_portal(url: str) -> tuple[str, str]:
+    try:
+        if not isinstance(url, str) or not 1 <= len(url) <= 2048 or re.search(r"[\s\\?#]", url):
+            raise ValueError
+        parts = urlsplit(url)
+        path = parts.path or "/"
+        if (
+            parts.scheme != "https"
+            or not re.fullmatch(r"/[a-zA-Z0-9._~/-]*", path)
+            or "//" in path
+            or {".", ".."}.intersection(path.split("/"))
+        ):
+            raise ValueError
+        authority = normalize_authority(parts.netloc)
+        return f"https://{authority}{path}", authority
+    except (ValueError, TypeError) as exc:
+        raise ValueError("请输入完整的 HTTPS 登录网址，去掉用户名、查询参数和片段。") from exc
+
+
+def bjut_wired_portal_supported(url: str) -> bool:
+    return url in (BJUT_WIRED_URL, BJUT_WIRED_PAGE)
+
+
 def validate_target(url: str, profile: NetworkProfile) -> str:
     try:
+        if profile.is_wired:
+            entry, authority = normalize_wired_portal(profile.portal_page_url)
+            if entry != profile.portal_page_url or profile.trusted_portal_hosts != (authority,):
+                raise ValueError
+            if url == entry:
+                return authority
+            if not bjut_wired_portal_supported(entry):
+                raise ValueError
+            if url not in {
+                BJUT_WIRED_URL,
+                BJUT_WIRED_PAGE,
+                BJUT_WIRED_STATUS,
+                BJUT_WIRED_LOGIN,
+                BJUT_WIRED_CONFIG,
+            } and not _WIRED_TEMPLATE.fullmatch(url):
+                raise ValueError
+            return BJUT_WIRED_HOST
         if re.search(r"[\s\\]", url):
             raise ValueError
         parts = urlsplit(url)
@@ -122,6 +174,33 @@ def validate_target(url: str, profile: NetworkProfile) -> str:
         ) from exc
 
 
+def portal_entry(hint: str | None, profile: NetworkProfile) -> str | None:
+    if profile.is_wired and hint:
+        # An exact first-party discovery hint can identify the gateway; the app
+        # opens its configured HTTPS entry independently and drops all query data.
+        try:
+            parts = urlsplit(hint)
+            if re.search(r"[\s\\]", hint) or parts.fragment:
+                raise ValueError
+            authority = normalize_authority(
+                parts.netloc, default_port=80 if parts.scheme == "http" else 443
+            )
+            path = parts.path or "/"
+            if parts.scheme == "https" and f"https://{authority}{path}" == profile.portal_page_url:
+                return profile.portal_page_url
+            if (
+                bjut_wired_portal_supported(profile.portal_page_url)
+                and parts.scheme in {"http", "https"}
+                and authority == BJUT_WIRED_HOST
+                and path in {"/", "/a79.htm"}
+            ):
+                return profile.portal_page_url
+        except ValueError:
+            pass
+        raise CampusError(ErrorCode.UNTRUSTED_TARGET, "发现的入口与有线档案确认的网关不一致。")
+    return hint or profile.portal_page_url or None
+
+
 def profile_setup_issues(
     profile: NetworkProfile, portal_url: str | None = None
 ) -> tuple[ProfileIssue, ...]:
@@ -129,6 +208,17 @@ def profile_setup_issues(
     issues = []
     if not profile.enabled:
         issues.append(ProfileIssue.DISABLED)
+    if profile.is_wired:
+        if not profile.portal_page_url:
+            return (*issues, ProfileIssue.PAGE_MISSING)
+        try:
+            validate_target(profile.portal_page_url, profile)
+        except CampusError:
+            issues.append(ProfileIssue.HTTPS_TRUST)
+        else:
+            if not bjut_wired_portal_supported(profile.portal_page_url):
+                issues.append(ProfileIssue.WIRED_PROTOCOL)
+        return tuple(issues)
     if not profile.portal_page_url:
         issues.append(ProfileIssue.PAGE_MISSING)
     if not profile.bjut_api_origin:

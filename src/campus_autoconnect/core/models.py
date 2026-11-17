@@ -3,6 +3,7 @@
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
+from ipaddress import IPv4Address
 
 
 class AuthState(StrEnum):
@@ -84,6 +85,7 @@ class ProfileIssue(StrEnum):
     API_MISSING = "api_origin_missing"
     HTTP_PERMISSION = "http_permission_required"
     HTTPS_TRUST = "https_targets_untrusted"
+    WIRED_PROTOCOL = "wired_protocol_unverified"
 
 
 @dataclass(frozen=True)
@@ -118,6 +120,33 @@ class AuthProgress:
         }
 
 
+class LinkType(StrEnum):
+    UNKNOWN = "unknown"
+    WIFI = "wifi"
+    ETHERNET = "ethernet"
+
+
+BJUT_WIRED_ADAPTER = "bjut-wired"
+
+
+def usable_ipv4(values: tuple[str, ...]) -> tuple[str, ...]:
+    addresses = set()
+    for value in values:
+        try:
+            address = IPv4Address(value)
+        except ValueError:
+            continue
+        if not (
+            address.is_unspecified
+            or address.is_link_local
+            or address.is_loopback
+            or address.is_multicast
+            or address.is_reserved
+        ):
+            addresses.add(str(address))
+    return tuple(sorted(addresses))
+
+
 @dataclass(frozen=True)
 class NetworkAdapter:
     index: int
@@ -130,6 +159,24 @@ class NetworkAdapter:
     ipv6: tuple[str, ...] = ()
     gateways: tuple[str, ...] = ()
     dns: tuple[str, ...] = ()
+    link_type: LinkType = LinkType.UNKNOWN
+
+    @property
+    def link(self) -> LinkType:
+        return LinkType.WIFI if self.ssid is not None else self.link_type
+
+    @property
+    def wired_gateways(self) -> tuple[str, ...]:
+        return usable_ipv4(self.gateways)
+
+    @property
+    def ethernet_ready(self) -> bool:
+        return (
+            self.connected
+            and self.hardware
+            and self.link == LinkType.ETHERNET
+            and bool(usable_ipv4(self.ipv4) and self.wired_gateways)
+        )
 
 
 @dataclass(frozen=True)
@@ -151,10 +198,51 @@ class NetworkSnapshot:
         return self.wifi.ssid if self.wifi else None
 
     @property
+    def ready_ethernet(self) -> tuple[NetworkAdapter, ...]:
+        return tuple(adapter for adapter in self.adapters if adapter.ethernet_ready)
+
+    @property
+    def selected(self) -> NetworkAdapter | None:
+        wired = self.ready_ethernet
+        if wired:
+            return wired[0] if len(wired) == 1 else None
+        wifi = self.wifi
+        return wifi if wifi is not None and wifi.hardware else None
+
+    @property
+    def selection(self) -> LinkType:
+        selected = self.selected
+        return selected.link if selected else LinkType.UNKNOWN
+
+    def link_diagnostics(self) -> dict:
+        return {
+            "selected_link": self.selection.value,
+            "ethernet_links_up": sum(
+                a.connected and a.hardware and a.link == LinkType.ETHERNET for a in self.adapters
+            ),
+            "ethernet_ready_count": len(self.ready_ethernet),
+            "wifi_link_up": any(
+                a.connected and a.hardware and a.link == LinkType.WIFI for a in self.adapters
+            ),
+            "wifi_ssid_known": self.ssid is not None,
+        }
+
+    @property
     def fingerprint(self) -> tuple:
         """Compare live network context without serializing it into diagnostics."""
         return tuple(
-            (a.index, a.guid, a.connected, a.hardware, a.ssid, a.ipv4, a.ipv6, a.gateways, a.dns)
+            (
+                a.index,
+                a.guid,
+                a.connected,
+                a.hardware,
+                a.link,
+                a.ssid,
+                a.ipv4,
+                a.ipv6,
+                a.gateways,
+                a.dns,
+            )
             for a in self.adapters
         ) + (self.warnings,)
 
@@ -174,6 +262,21 @@ class NetworkProfile:
     bjut_api_origin: str = field(default="", repr=False)
     allow_http_auth: bool = False
     allow_zero_mac: bool = False
+    wired_interface: str = field(default="", repr=False)
+    wired_gateways: tuple[str, ...] = field(default=(), repr=False)
+
+    @property
+    def is_wired(self) -> bool:
+        return self.adapter_id == BJUT_WIRED_ADAPTER
+
+    def matches_adapter(self, adapter: NetworkAdapter) -> bool:
+        if self.is_wired:
+            return (
+                adapter.ethernet_ready
+                and adapter.guid == self.wired_interface
+                and adapter.wired_gateways == self.wired_gateways
+            )
+        return adapter.link == LinkType.WIFI and adapter.ssid == self.ssid
 
 
 @dataclass(frozen=True)
@@ -195,6 +298,7 @@ class ProbeObservation:
     expected: bool = False
     portal_url: str | None = field(default=None, repr=False)
     code: ErrorCode = ErrorCode.NONE
+    socket_ips: tuple[str, str] | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True)

@@ -10,6 +10,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PUBLIC_DOCUMENTS = (
+    "CHANGELOG.md",
     "QUICK_START.md",
     "USER_MANUAL.md",
     "INSTALL_UNINSTALL.md",
@@ -44,7 +45,7 @@ def public_files() -> dict[str, Path]:
         for path in (ROOT / directory).rglob("*"):
             if (
                 path.is_file()
-                and path.suffix in {".py", ".spec", ".txt", ".cmd", ".ps1"}
+                and path.suffix in {".py", ".spec", ".iss", ".txt", ".cmd", ".ps1"}
                 and "__pycache__" not in path.parts
             ):
                 selected[path.relative_to(ROOT).as_posix()] = path
@@ -68,7 +69,6 @@ def public_files() -> dict[str, Path]:
         ("docs/publication/ARCHITECTURE.md", "docs/architecture.md"),
         ("docs/publication/DEVELOPMENT.md", "docs/testing.md"),
         ("docs/publication/SECURITY.md", "docs/security.md"),
-        ("docs/publication/CHANGELOG.md", "docs/release/CHANGELOG.md"),
         ("docs/publication/INSPECTOR.md", "软件检测/README.md"),
         ("docs/publication/INSPECTOR.md", "软件检测/使用说明.md"),
         ("docs/publication/INSPECTOR.md", "软件检测/测试与交接.md"),
@@ -117,8 +117,9 @@ def export(destination: Path) -> dict:
         "Run full pytest, ruff check and ruff format --check before delivery. "
         "Mock success does not imply field acceptance.\n"
     )
-    (destination / "AGENTS.md").write_text(instructions, encoding="utf-8")
-    hashes["AGENTS.md"] = hashlib.sha256(instructions.encode()).hexdigest()
+    instructions_bytes = instructions.encode("utf-8")
+    (destination / "AGENTS.md").write_bytes(instructions_bytes)
+    hashes["AGENTS.md"] = hashlib.sha256(instructions_bytes).hexdigest()
     return {
         "files": len(hashes),
         "sha256": dict(sorted(hashes.items())),

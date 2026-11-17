@@ -4,7 +4,9 @@ import json
 import threading
 import time
 from collections.abc import Callable
+from contextlib import suppress
 from datetime import UTC, datetime
+from pathlib import Path
 
 from campus_autoconnect.core.errors import CampusError
 from campus_autoconnect.core.models import ErrorCode
@@ -16,8 +18,14 @@ from campus_autoconnect.infrastructure.capture_sanitizer import (
     should_watch,
 )
 from campus_autoconnect.infrastructure.locking import FileMutex
-from campus_autoconnect.services.capture_analysis import analyze_capture
+from campus_autoconnect.infrastructure.reports import ReportSession
+from campus_autoconnect.services.capture_analysis import (
+    analyze_capture_payload,
+    capture_endpoints_from_payload,
+)
 from campus_autoconnect.services.support import SupportService
+
+_PORTAL_PROBE = "http://www.msftconnecttest.com/connecttest.txt"
 
 
 class BrowserCapture:
@@ -28,23 +36,48 @@ class BrowserCapture:
         self.truncated = False
         self.probe_requested = threading.Event()
         self.last_payload: dict | None = None
+        self.saved_path: Path | None = None
+        self._report_session: ReportSession | None = None
+        self._wifi_ssid: str | None = None
         self.record_bytes = 0
 
-    def _target(self) -> str:
+    def _target(self, wifi_ssid: str | None = None) -> str:
         auth = self.support.authentication
         network = auth.network.snapshot()
-        profile = auth.profiles.match(network.ssid)
+        if wifi_ssid is not None:
+            selected = network.selected
+            if not selected or not selected.ssid or (wifi_ssid and selected.ssid != wifi_ssid):
+                raise CampusError(
+                    ErrorCode.UNTRUSTED_NETWORK,
+                    "请先让 Windows 使用要配置的 Wi-Fi，再开始回填抓包。",
+                )
+            self._wifi_ssid = selected.ssid
+        profile = auth.profiles.match_network(network)
         if profile is None or not profile.portal_page_url:
-            return "http://www.msftconnecttest.com/connecttest.txt"
-        validate_target(profile.portal_page_url, profile)
+            return _PORTAL_PROBE
+        try:
+            validate_target(profile.portal_page_url, profile)
+        except CampusError:
+            if wifi_ssid is not None:
+                return _PORTAL_PROBE
+            raise
         if not auth.network.route_allows(profile.portal_page_url, network):
             raise CampusError(
                 ErrorCode.ROUTE_UNCONFIRMED, "抓包前无法确认校园网路由，请先查看诊断。"
             )
         return profile.portal_page_url
 
+    def wifi_configuration(self) -> tuple[str, str, str]:
+        current = self.support.authentication.network.snapshot().selected
+        if self._wifi_ssid is None or current is None or current.ssid != self._wifi_ssid:
+            raise CampusError(
+                ErrorCode.NETWORK_CHANGED, "当前 Wi-Fi 已变化，抓包文件可用于人工核对。"
+            )
+        page, api = capture_endpoints_from_payload(self.last_payload)
+        return self._wifi_ssid, page, api
+
     @staticmethod
-    def launch(playwright):
+    def launch(playwright, *, headless: bool = False):
         import os
         from pathlib import Path
 
@@ -61,7 +94,7 @@ class BrowserCapture:
                         candidates.append({"executable_path": str(path)})
         for candidate in candidates:
             try:
-                return playwright.chromium.launch(**candidate, headless=False, timeout=12000)
+                return playwright.chromium.launch(**candidate, headless=headless, timeout=12000)
             except Exception:
                 continue
         raise CampusError(
@@ -69,20 +102,31 @@ class BrowserCapture:
             "无法启动专用 Edge/Chrome，请确认已安装且能正常打开；未生成成功抓包。",
         )
 
-    def run(self, cancel: threading.Event, *, launcher: Callable | None = None) -> dict:
-        if self.state in {"saved", "empty"}:
+    def run(
+        self,
+        cancel: threading.Event,
+        *,
+        launcher: Callable | None = None,
+        wifi_ssid: str | None = None,
+    ) -> dict:
+        if self.last_payload is not None:
             self.support.finish()
-        self.support.begin()
         mutex = FileMutex(self.support.directory / "authentication.lock")
         records: list[dict] = []
         lookup: dict = {}
         started = datetime.now(UTC).isoformat()
         self.state, self.count, self.truncated = "waiting", 0, False
         self.last_payload, self.record_bytes = None, 0
+        self.saved_path = None
+        self._report_session = None
+        self._wifi_ssid = None
         self.probe_requested.clear()
         deadline = time.monotonic() + 25
         acquired = False
+        recording_started = False
         try:
+            self.support.begin()
+            self._report_session = self.support.session
             while not cancel.is_set():
                 if mutex.acquire():
                     acquired = True
@@ -94,7 +138,8 @@ class BrowserCapture:
                 time.sleep(0.1)
             if not acquired or cancel.is_set():
                 raise CampusError(ErrorCode.CANCELLED, "抓包启动已取消。")
-            target = self._target()
+            target = self._target(wifi_ssid)
+            from playwright.sync_api import Error as PlaywrightError
             from playwright.sync_api import sync_playwright
 
             with sync_playwright() as driver:
@@ -189,63 +234,79 @@ class BrowserCapture:
                     context.on("requestfinished", finished)
                     context.on("requestfailed", failed)
                     page = context.new_page()
+                    recording_started = True
                     self.state = "recording"
                     try:
                         page.goto(target, wait_until="domcontentloaded", timeout=14000)
                     except Exception:
                         self.state = "navigation_failed"
-                    while not cancel.is_set() and browser.is_connected() and context.pages:
+                    while not cancel.is_set():
+                        pages = context.pages
+                        if not browser.is_connected() or not pages:
+                            self.state = "browser_closed"
+                            break
+                        active_page = pages[0]
                         if self.probe_requested.is_set():
                             self.probe_requested.clear()
                             try:
-                                context.pages[0].goto(
+                                active_page.goto(
                                     target, wait_until="domcontentloaded", timeout=14000
                                 )
                             except Exception:
                                 self.state = "navigation_failed"
-                        context.pages[0].wait_for_timeout(180)
+                        try:
+                            active_page.wait_for_timeout(180)
+                        except PlaywrightError:
+                            if not browser.is_connected() or not context.pages:
+                                self.state = "browser_closed"
+                                break
+                            self.state = "partial"
+                            break
                 finally:
-                    browser.close()
-            payload = {
-                "tool": "Campus Portal Capture / sanitized v1.2.0",
-                "source": "dedicated_browser",
-                "started_at": started,
-                "finished_at": datetime.now(UTC).isoformat(),
-                "count": len(records),
-                "truncated": self.truncated,
-                "capture_state": "stopped" if self.state == "recording" else self.state,
-                "privacy": (
-                    "本地保留目标主机/端口供配置；账号密码、Cookie、Token、原始正文不保存。"
-                    "请勿直接分享此文件。"
-                ),
-                "requests": records,
-            }
-            self.last_payload = payload
-            return self.retry_save()
+                    with suppress(PlaywrightError):
+                        browser.close()
         except CampusError:
-            self.state = "failed"
-            raise
+            if not recording_started and not records:
+                self.state = "failed"
+                raise
+            self.state = "partial"
         except ImportError as exc:
-            self.state = "failed"
-            raise CampusError(
-                ErrorCode.CONFIG_ERROR, "抓包依赖缺失，请重新完整解压新版程序包。"
-            ) from exc
+            if not recording_started and not records:
+                self.state = "failed"
+                raise CampusError(
+                    ErrorCode.CONFIG_ERROR, "抓包依赖缺失，请重新完整解压新版程序包。"
+                ) from exc
+            self.state = "partial"
         except Exception as exc:
-            self.state = "failed"
-            raise CampusError(
-                ErrorCode.UNKNOWN, "浏览器抓包异常结束，未报告为成功；可查看已保存的诊断。"
-            ) from exc
+            if not recording_started and not records:
+                self.state = "failed"
+                raise CampusError(ErrorCode.UNKNOWN, "浏览器抓包未能启动。") from exc
+            self.state = "partial"
         finally:
+            if recording_started or records:
+                self.last_payload = {
+                    "tool": "Campus Portal Capture / sanitized v1.2.0",
+                    "source": "dedicated_browser",
+                    "started_at": started,
+                    "finished_at": datetime.now(UTC).isoformat(),
+                    "count": len(records),
+                    "truncated": self.truncated,
+                    "capture_state": "stopped" if self.state == "recording" else self.state,
+                    "privacy": "本地保留目标主机和端口。账号密码、Cookie、Token 和原始正文已脱敏。",
+                    "requests": records,
+                }
             if acquired:
                 mutex.release()
+        return self.retry_save()
 
     def retry_save(self) -> dict:
-        if self.last_payload is None:
+        session = self._report_session
+        if self.last_payload is None or session is None:
             raise CampusError(ErrorCode.CONFIG_ERROR, "尚无可重试保存的抓包记录。")
         try:
-            path = self.support.session.write("PortalCapture_session.json", self.last_payload)
+            self.saved_path = session.write("PortalCapture_session.json", self.last_payload)
             summary = (
-                analyze_capture(path)
+                analyze_capture_payload(self.last_payload)
                 if self.last_payload["count"]
                 else {
                     "request_count": 0,
@@ -256,7 +317,7 @@ class BrowserCapture:
             )
             summary["truncated"] = self.last_payload["truncated"]
             summary["capture_state"] = self.last_payload["capture_state"]
-            self.support.session.write(
+            session.write(
                 "PortalCapture_session.txt",
                 "浏览器抓包摘要\n" + json.dumps(summary, ensure_ascii=False, indent=2),
             )

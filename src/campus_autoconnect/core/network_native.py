@@ -15,12 +15,21 @@ from enum import StrEnum
 from pathlib import Path
 
 from campus_autoconnect.core.errors import CampusError
-from campus_autoconnect.core.models import ErrorCode, NetworkAdapter, NetworkSnapshot
+from campus_autoconnect.core.models import ErrorCode, LinkType, NetworkAdapter, NetworkSnapshot
 
 U8, U16, U32, U64 = c.c_uint8, c.c_uint16, c.c_uint32, c.c_uint64
 PTR = c.c_void_p
 MAX_BUFFER = 16 * 1024 * 1024
 MAX_ITEMS = 512
+
+
+def classify_link(if_type: int, physical_medium: int) -> LinkType:
+    # RFC 2863 ifType and Windows NDIS_PHYSICAL_MEDIUM; never infer from friendly names.
+    if if_type == 71 or physical_medium in (1, 9):
+        return LinkType.WIFI
+    if if_type == 6 and physical_medium in (0, 14):
+        return LinkType.ETHERNET
+    return LinkType.UNKNOWN
 
 
 class NativeFailure(StrEnum):
@@ -312,25 +321,30 @@ class NativeNetwork:
                     ipv6=tuple(a for a in addresses if ":" in a),
                     gateways=reader.addresses(item.gateways),
                     dns=reader.addresses(item.dns),
+                    link_type=classify_link(row.if_type, row.physical_medium),
                 )
             )
         return tuple(sorted(adapters, key=lambda a: a.index))
 
     def route_allows(self, host: str, snapshot: NetworkSnapshot) -> bool:
-        wifi = snapshot.wifi
-        if wifi is None:
+        selected = snapshot.selected
+        if selected is None:
             return False
         dll = self._api()
-        row = InterfaceRow(index=wifi.index)
+        row = InterfaceRow(index=selected.index)
         code = dll.GetIfEntry2(c.byref(row))
         if code in (2, 1168):
             return False
         if code:
             raise NativeQueryError(NativeFailure.API_ERROR)
         if (
-            str(uuid.UUID(bytes_le=bytes(row.guid.data))) != wifi.guid
+            str(uuid.UUID(bytes_le=bytes(row.guid.data))) != selected.guid
             or row.oper_status != 1
             or not row.status_flags & 1
+            or (
+                selected.link == LinkType.ETHERNET
+                and classify_link(row.if_type, row.physical_medium) != LinkType.ETHERNET
+            )
         ):
             return False
         try:
@@ -345,14 +359,14 @@ class NativeNetwork:
                 return False
         if not 1 <= len(addresses) <= 64:
             return False
-        allowed_sources = {a.split("%")[0] for a in (*wifi.ipv4, *wifi.ipv6)}
+        allowed_sources = {a.split("%")[0] for a in (*selected.ipv4, *selected.ipv6)}
         for address in sorted(addresses):
             try:
                 target = destination_address(address)
             except (ValueError, OverflowError):
                 return False
             route, source = RouteRow(), SockaddrInet()
-            # Unconstrained query: observe Windows' selected route, never force Wi-Fi.
+            # Unconstrained query: observe Windows' selected route.
             code = dll.GetBestRoute2(
                 None, 0, None, c.byref(target), 0, c.byref(route), c.byref(source)
             )
@@ -363,7 +377,7 @@ class NativeNetwork:
             source_ip = decode_address(bytes(source))
             if (
                 route.luid != row.luid
-                or route.index != wifi.index
+                or route.index != selected.index
                 or source_ip not in allowed_sources
             ):
                 return False

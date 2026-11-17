@@ -1,7 +1,7 @@
 import threading
 
 import pytest
-from PySide6.QtCore import QThread, QTimer, QUrl
+from PySide6.QtCore import Qt, QThread, QTimer, QUrl
 
 from campus_autoconnect.core.models import AuthResult, AuthState, ErrorCode
 from campus_autoconnect.core.observation import OperationTrace
@@ -13,16 +13,19 @@ pytestmark = pytest.mark.mock
 
 
 @pytest.fixture
-def integrated(qtbot, profiles, credentials, snapshot, tmp_path):
+def integrated(qtbot, profiles, credentials, network, tmp_path):
     class Authentication:
         trace = OperationTrace()
+
+        def __init__(self) -> None:
+            self.network = network
 
         def check(self, _):
             return AuthResult(
                 AuthState.AUTH_FAILED,
                 ErrorCode.CREDENTIALS_MISSING,
                 "请检查当前引用的凭据。",
-                snapshot,
+                self.network.current,
             )
 
         login = check
@@ -81,6 +84,10 @@ def test_help_is_searchable_and_links_only_navigate(integrated, credentials):
     assert window.tabs.currentWidget() == window.pages["credentials"]
     help_panel.link(QUrl("https://evil.example.invalid/"))
     assert window.tabs.currentWidget() == window.pages["credentials"]
+    help_panel.search.setText("网页抓包、自动跳转")
+    assert "page:profiles" in help_panel.filtered[0][1]
+    help_panel.link(QUrl("page:profiles"))
+    assert window.tabs.currentWidget() == window.pages["profiles"]
     assert credentials.reads == 0
 
 
@@ -95,31 +102,45 @@ def test_checking_saved_status_does_not_discard_new_input(integrated, qtbot):
     assert panel.password.text() == "unsaved-new-password"
 
 
-def test_capture_worker_stop_is_responsive_and_returns_to_capture(integrated, qtbot, monkeypatch):
+def test_capture_worker_stop_is_responsive_in_wifi_editor(integrated, qtbot, monkeypatch):
     window = integrated
+    assert "capture" not in window.pages
+    editor = window._create_profile_editor(current_ssid="Example-Campus")
+    qtbot.addWidget(editor)
+    editor.show()
+    panel = editor.capture_panel
+    assert panel is not None
     started = threading.Event()
+    capture = window.browser_capture
 
-    def run(cancel):
+    def run(cancel, *, wifi_ssid):
         assert QThread.currentThread() != window.thread()
-        window.browser_capture.state = "recording"
+        assert wifi_ssid == "Example-Campus"
+        capture.state = "recording"
+        capture._wifi_ssid = wifi_ssid
         started.set()
         assert cancel.wait(3)
+        capture.last_payload = {"requests": []}
         return {"request_count": 0, "login_request_observed": False}
 
-    monkeypatch.setattr(window.browser_capture, "run", run)
-    window.start_browser_capture()
+    monkeypatch.setattr(capture, "run", run)
+    qtbot.mouseClick(panel.start, Qt.LeftButton)
     pulse = threading.Event()
     QTimer.singleShot(10, pulse.set)
     try:
         qtbot.waitUntil(started.is_set)
         qtbot.waitUntil(pulse.is_set)
-        assert window.capture_panel.stop.isEnabled()
+        assert panel.stop.isEnabled()
         assert not window.login_button.isEnabled()
+        qtbot.mouseClick(panel.probe, Qt.LeftButton)
+        assert capture.probe_requested.is_set()
+        editor.reject()
+        assert editor.isVisible()
     finally:
         window._cancel.set()
         qtbot.waitUntil(lambda: not window.busy)
-    assert "空记录" in window.capture_panel.state.text()
-    assert window.tabs.currentWidget() == window.pages["capture"]
+    assert "空记录" in panel.state.text() and "未抓到完整登录" in panel.state.text()
+    assert editor.isVisible() and panel.start.isEnabled()
 
 
 def test_stale_receipt_callback_does_not_overwrite_another_reference(
@@ -144,3 +165,67 @@ def test_stale_receipt_callback_does_not_overwrite_another_reference(
         release.set()
         qtbot.waitUntil(lambda: not window.busy)
     assert "已保存并复核" not in window.credentials_panel.status.text()
+
+
+def test_saved_credentials_require_hold_and_can_be_masked_again(integrated, credentials, qtbot):
+    window = integrated
+    window.show_page("credentials")
+    panel = window.credentials_panel
+    button = panel.reveal_button
+    assert panel.saved_username.text() == panel.saved_password.text() == "********"
+    qtbot.mouseClick(button, Qt.LeftButton)
+    assert credentials.reads == 0
+    qtbot.mousePress(button, Qt.LeftButton)
+    qtbot.waitUntil(lambda: not window.busy and button.text() == "隐藏")
+    qtbot.mouseRelease(button, Qt.LeftButton)
+    assert panel.saved_username.text() == credentials.values["shared"].username
+    assert panel.saved_password.text() == credentials.values["shared"].password
+    assert credentials.reads == 1 and not panel.password.text()
+    qtbot.mouseClick(button, Qt.LeftButton)
+    assert button.text() == "显示" and panel.saved_password.text() == "********"
+    qtbot.mousePress(button, Qt.LeftButton)
+    qtbot.waitUntil(lambda: not window.busy and button.text() == "隐藏")
+    qtbot.mouseRelease(button, Qt.LeftButton)
+    window.show_page("overview")
+    assert panel.saved_username.text() == panel.saved_password.text() == "********"
+
+
+def test_wifi_editor_fills_from_integrated_capture(integrated, qtbot, tmp_path, monkeypatch):
+    window = integrated
+    editor = window._create_profile_editor(current_ssid="Example-Campus")
+    qtbot.addWidget(editor)
+    panel = editor.capture_panel
+    assert panel is not None
+    editor.show()
+    capture = window.browser_capture
+    started = threading.Event()
+    path = tmp_path / "PortalCapture_session.json"
+
+    def run(cancel, *, wifi_ssid):
+        assert wifi_ssid == "Example-Campus"
+        assert QThread.currentThread() != window.thread()
+        started.set()
+        assert cancel.wait(3)
+        path.write_text("{}", encoding="utf-8")
+        capture.saved_path = path
+        return {"request_count": 3}
+
+    definitions = (
+        "Example-Campus",
+        "https://campus.example.edu/a79.htm",
+        "https://campus.example.edu:802",
+    )
+    monkeypatch.setattr(capture, "run", run)
+    monkeypatch.setattr(capture, "wifi_configuration", lambda: definitions)
+    qtbot.mouseClick(panel.start, Qt.LeftButton)
+    try:
+        qtbot.waitUntil(started.is_set)
+        assert panel.stop.isEnabled()
+    finally:
+        qtbot.mouseClick(panel.stop, Qt.LeftButton)
+        qtbot.waitUntil(lambda: not window.busy)
+    assert (editor.ssid_edit.text(), editor.page_edit.text(), editor.api_edit.text()) == definitions
+    assert editor.hosts_edit.text() == "campus.example.edu, campus.example.edu:802"
+    assert not editor.allow_http.isChecked() and not editor.auto_auth.isChecked()
+    assert str(path) in panel.path.text() and panel.open.isEnabled()
+    assert "已回填" in panel.state.text()

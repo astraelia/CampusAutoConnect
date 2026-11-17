@@ -2,7 +2,7 @@
 
 ## 分发内容
 
-GitHub源码与Windows发布包不包含作者的真实账号密码、SSID、IP、网关、MAC、认证主机、配置/备份、日志、报告、Cookie、Token或抓包。`config/config.example.json`为`{"schema_version":1,"profiles":[]}`，没有预设校园入口；测试中的网络、账号和密码均为虚构夹具，不供实际登录。
+有线登录网址由本人配置。`config/config.example.json` 的档案列表为空，测试网络和账号均为虚构。实际账号密码、SSID、物理网卡标识、IP、网关、配置、日志及抓包均由本机单独保存。
 
 新电脑或新Windows用户的网络档案为空、全局自动认证关闭、登录任务未安装，HTTP及全零MAC许可不预授予。默认主题/关闭方式和报告保留策略属于普通程序默认值，不代表作者个人配置。
 
@@ -12,8 +12,8 @@ GitHub源码与Windows发布包不包含作者的真实账号密码、SSID、IP�
 
 | 数据 | 存放位置 | 是否可以公开 |
 | --- | --- | --- |
-| 校园账号密码 | Windows Credential Manager，显式WinVaultKeyring | 不可以；不写普通文件、不回填界面 |
-| 网络档案及备份 | LOCALAPPDATA应用目录的config.json/备份 | 不可以，包含SSID、认证入口等 |
+| 校园账号密码 | Windows Credential Manager，显式 WinVaultKeyring | 默认遮罩。按住“显示”在本机临时查看 |
+| 网络档案及备份 | LOCALAPPDATA 应用目录的 config.json 和备份 | 不公开。可能包含 SSID、认证入口、物理网卡标识和 IPv4 网关 |
 | 自动认证、桌面、报告策略 | LOCALAPPDATA应用目录 | 无须随包迁移，也不作为公开附件 |
 | 滚动日志 | LOCALAPPDATA应用目录的logs | 只记录白名单事件，分享前仍检查 |
 | 主动诊断与生命周期记录 | EXE目录的reports | 诊断按白名单脱敏，分享前仍检查 |

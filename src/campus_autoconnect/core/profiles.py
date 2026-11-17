@@ -1,11 +1,18 @@
 """Profile operations shared by GUI and CLI."""
 
-import json
 import uuid
-from dataclasses import asdict, replace
+from dataclasses import replace
 from pathlib import Path
 
-from campus_autoconnect.core.models import NetworkProfile
+from campus_autoconnect.core.errors import CampusError
+from campus_autoconnect.core.models import (
+    BJUT_WIRED_ADAPTER,
+    ErrorCode,
+    NetworkAdapter,
+    NetworkProfile,
+    NetworkSnapshot,
+)
+from campus_autoconnect.core.portal import normalize_wired_portal
 from campus_autoconnect.infrastructure.config import ConfigStore
 from campus_autoconnect.infrastructure.files import read_text_shared
 
@@ -21,8 +28,30 @@ class ProfileService:
         profiles = self.list()
         if self.store.warning:
             return None
-        matches = [p for p in profiles if p.enabled and p.ssid == ssid]
+        matches = [p for p in profiles if p.enabled and not p.is_wired and p.ssid == ssid]
         return matches[0] if len(matches) == 1 else None
+
+    def match_network(self, snapshot: NetworkSnapshot) -> NetworkProfile | None:
+        adapter = snapshot.selected
+        if adapter is None:
+            return None
+        profiles = self.list()
+        if self.store.warning:
+            return None
+        matches = [p for p in profiles if p.enabled and p.matches_adapter(adapter)]
+        return matches[0] if len(matches) == 1 else None
+
+    def for_edit(self, adapter: NetworkAdapter) -> NetworkProfile | None:
+        profiles = self.list()
+        if self.store.warning:
+            raise CampusError(ErrorCode.CONFIG_ERROR, "档案配置不可用，请先修复配置。")
+        matches = [p for p in profiles if p.matches_adapter(adapter)]
+        enabled = [p for p in matches if p.enabled]
+        if len(enabled) == 1:
+            return enabled[0]
+        if len(matches) > 1:
+            raise CampusError(ErrorCode.UNTRUSTED_NETWORK, "请在网络档案中选定要编辑的条目。")
+        return matches[0] if matches else None
 
     def upsert(self, profile: NetworkProfile) -> None:
         self.store.update(
@@ -41,8 +70,7 @@ class ProfileService:
         profiles = self.list()
         if self.store.warning:
             raise ValueError("请先修复本机档案配置。")
-        payload = {"schema_version": 1, "profiles": [asdict(profile) for profile in profiles]}
-        ConfigStore._atomic_write(path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+        ConfigStore._atomic_write(path, ConfigStore.encode(profiles) + "\n")
 
     def import_from(self, path: Path) -> int:
         profiles = ConfigStore.decode(read_text_shared(path, ConfigStore.MAX_BYTES))
@@ -62,3 +90,19 @@ class ProfileService:
         ]
         self.store.update(lambda existing: existing + incoming)
         return len(incoming)
+
+
+def new_wired_profile(adapter: NetworkAdapter, url: str = "") -> NetworkProfile:
+    if not adapter.ethernet_ready:
+        raise CampusError(ErrorCode.UNTRUSTED_NETWORK, "物理网卡尚未取得可用的 IPv4 地址和网关。")
+    page, host = normalize_wired_portal(url) if url else ("", "")
+    return NetworkProfile(
+        uuid.uuid4().hex,
+        "有线网络",
+        "",
+        adapter_id=BJUT_WIRED_ADAPTER,
+        trusted_portal_hosts=(host,) if host else (),
+        portal_page_url=page,
+        wired_interface=adapter.guid,
+        wired_gateways=adapter.wired_gateways,
+    )

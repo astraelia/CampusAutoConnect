@@ -30,7 +30,11 @@ def run() -> dict:
     # Native IP Helper also enumerates hidden system interfaces. Compare every
     # legacy adapter, and all active interfaces with addresses, by semantic fields.
     def context(a):
-        return a.index, a.connected, a.hardware, a.ssid, a.ipv4, a.ipv6, a.gateways, a.dns
+        return a.index, a.connected, a.hardware, a.link, a.ssid, a.ipv4, a.ipv6, a.gateways, a.dns
+
+    def binding(snapshot):
+        adapter = snapshot.selected
+        return (adapter.guid, adapter.link, adapter.wired_gateways) if adapter else None
 
     common_matches = all(
         a.guid in by_guid and context(a) == context(by_guid[a.guid]) for a in previous.adapters
@@ -56,6 +60,8 @@ def run() -> dict:
         "x64_abi_layout": ctypes.sizeof(InterfaceRow) == 1352 and ctypes.sizeof(RouteRow) == 104,
         "snapshot_stable": snapshots[0].fingerprint == current.fingerprint,
         "legacy_adapters_match": common_matches,
+        "selected_link": current.selection.value,
+        "selected_adapter_and_ipv4_gateways_match": binding(previous) == binding(current),
         "no_unmatched_active_addressed_interfaces": not extra_active,
         "loopback_route_api_succeeded": code == 0 and route.index > 0,
         "native_snapshot_ms": samples,

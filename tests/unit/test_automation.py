@@ -199,6 +199,19 @@ def test_online_waits_one_minute_before_new_check(setup):
     assert auth.calls == 2
 
 
+def test_gateway_reports_existing_session_but_internet_remains_unverified(setup):
+    coordinator, auth, clock, *_ = setup
+    auth.results = [AuthResult(AuthState.UNKNOWN, ErrorCode.ALREADY_AUTHENTICATED, "Mock session")]
+    start(coordinator, clock)
+    assert coordinator.state == AutomationState.WAITING_READY
+    assert coordinator.attempts == 0 and auth.calls == 1
+    clock.advance(60)
+    coordinator.tick()
+    finish(coordinator)
+    assert coordinator.state == AutomationState.WAITING_READY
+    assert auth.calls == 2
+
+
 def test_resume_rechecks_online_and_suspend_defers_work(setup, snapshot):
     c, auth, clock, _, profile, _ = setup
     start(c, clock)

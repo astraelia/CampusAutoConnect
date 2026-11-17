@@ -21,6 +21,15 @@ NAME = f"CampusAutoConnect-{__version__}-win-x64"
 PACKAGE = ROOT / "dist" / NAME
 
 
+def write_checksum(artifact: Path) -> str:
+    with artifact.open("rb") as stream:
+        digest = hashlib.file_digest(stream, "sha256").hexdigest()
+    artifact.with_suffix(artifact.suffix + ".sha256").write_text(
+        digest + "  " + artifact.name + "\n", encoding="ascii"
+    )
+    return digest
+
+
 def validate_distribution_tree(package: Path) -> None:
     """Reject runtime data instead of silently putting it in a public archive."""
     forbidden_directories = {"reports", "logs", "private", "diagnostics", ".git", ".cache"}
@@ -82,14 +91,18 @@ def finalize() -> None:
         (documents / target).write_text(content, encoding="utf-8")
     (PACKAGE / "先读我.txt").write_text(
         f"Campus AutoConnect {__version__} · Windows 10/11 x64\n\n"
-        "请完整解压，双击 CampusAutoConnect.exe；保留同目录的 _internal。\n"
+        "双击 CampusAutoConnect.exe 启动。使用便携 ZIP 时请完整解压并保留 _internal。\n"
         "内嵌使用帮助含 12 章教程；诊断及抓包报告在程序目录 reports。凭据留空不表示未保存。\n"
         "无需安装 Python。先阅读“使用与核验/快速开始.md”和“人工核验清单.md”。\n"
-        "空白网络档案、不附带账号密码或认证入口；新电脑需本人重新配置。\n"
-        "中蓝公寓宿舍校园网已实测自动连接；本部其他区域和其他校区待验证。\n"
+        "出厂网络档案为空；新电脑需本人配置网络档案和 Windows 安全凭据。\n"
+        "中蓝公寓 Wi-Fi 有旧版实测记录。新版有线校园网登录待现场验收。\n"
         "本版使用原生网络查询及受控 PowerShell 回退；HTTP 兼容需在对应档案中明确勾选。\n"
         "先退出旧版及其托盘窗口，再启动本版；完整保留 _internal 文件夹。\n"
-        "检测网络 → 配置当前网络 → 从脱敏抓包填写认证地址，核对后明确允许 HTTP。\n"
+        "接校园网线或加入校园 Wi-Fi → 配置当前网络 → 保存并检查 → 手动测试认证。\n"
+        "有线请填写本人核对的 HTTPS 登录网址。Wi-Fi 可在配置窗口现场抓包并回填。\n"
+        "在专用浏览器手动登录后点“停止并保存”，或直接关闭该浏览器。\n"
+        "安全凭据默认显示为星号。按住“显示”，再点击“隐藏”收起。\n"
+        "故障时点“全面诊断”，查看选网、路由、TLS、实时协议及后台状态。\n"
         "旧档案显示待补全；修改入口后自动认证默认取消勾选，先手动测试。\n"
         "认证页全零 MAC 需在当前档案明确允许兼容；VLAN=0 保留页面原值。\n"
         "手动成功后再配置自动认证；后台可保存并启动，旧任务可主动修复到当前目录。\n"
@@ -167,15 +180,16 @@ def finalize() -> None:
         "architecture": platform.machine(),
         "dependencies": versions,
         "signed": False,
-        "real_bjut_authentication": "implemented_limited_branch_current_environment_user_confirmed",
+        "real_bjut_authentication": "wifi_previously_field_verified_wired_field_test_pending",
         "field_verification": {
             "source": "user_feedback_2026_10_18",
             "confirmed_version": "1.0.0",
             "current_environment_login_and_logon_auto_login": "confirmed",
             "current_release_performance": "pending_retest",
             "other_computers_and_regions": "not_verified",
+            "wired_real_login": "pending",
         },
-        "protocol_detection": "observed_eportal_explicit_profile_http_opt_in",
+        "protocol_detection": "eportal_wifi_and_https_drcom_wired",
         "distribution_defaults": {
             "network_profiles": "empty",
             "credentials_included": False,
@@ -202,10 +216,7 @@ def finalize() -> None:
         for path in sorted(PACKAGE.rglob("*")):
             if path.is_file():
                 output.write(path, path.relative_to(PACKAGE.parent).as_posix())
-    digest = hashlib.sha256(archive.read_bytes()).hexdigest()
-    archive.with_suffix(".zip.sha256").write_text(
-        digest + "  " + archive.name + "\n", encoding="ascii"
-    )
+    digest = write_checksum(archive)
     print(
         json.dumps(
             {
@@ -221,9 +232,34 @@ def finalize() -> None:
     )
 
 
+def build_installer(compiler: Path) -> None:
+    validate_distribution_tree(PACKAGE)
+    subprocess.run(
+        [
+            str(compiler.resolve(strict=True)),
+            f"/DAppVersion={__version__}",
+            str(ROOT / "packaging/CampusAutoConnect.iss"),
+        ],
+        cwd=ROOT,
+        check=True,
+    )
+    installer = PACKAGE.parent / f"CampusAutoConnect-{__version__}-setup-win-x64.exe"
+    print(
+        json.dumps(
+            {
+                "installer": installer.name,
+                "installer_bytes": installer.stat().st_size,
+                "installer_sha256": write_checksum(installer),
+            },
+            indent=2,
+        )
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--finalize-only", action="store_true")
+    parser.add_argument("--iscc", type=Path, help="用指定的 Inno Setup ISCC.exe 生成安装包")
     args = parser.parse_args()
     (ROOT / "docs/release/USER_MANUAL.md").write_text(
         web_manual((ROOT / "src/campus_autoconnect/assets/help.md").read_text(encoding="utf-8")),
@@ -257,6 +293,8 @@ def main() -> None:
             env={**os.environ, "PYINSTALLER_CONFIG_DIR": str(ROOT / ".cache" / "pyinstaller")},
         )
     finalize()
+    if args.iscc is not None:
+        build_installer(args.iscc)
 
 
 if __name__ == "__main__":

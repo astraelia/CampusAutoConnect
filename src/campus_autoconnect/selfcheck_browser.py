@@ -31,14 +31,16 @@ def run() -> dict:
                 body = (
                     b"<meta charset=utf-8><title>Local synthetic Portal</title>"
                     b"<p>LOCAL TEST ONLY</p><script>setTimeout(()=>fetch("
+                    b"'/eportal/portal/page/loadConfig').then(()=>fetch("
                     b"'/eportal/portal/login?user_account=synthetic-private-account&"
-                    b"user_password=synthetic-private-password'),200)</script>"
+                    b"user_password=synthetic-private-password')),200)</script>"
                 )
                 kind = "text/html"
             else:
                 body = b'{"result":1,"msg":"login success","token":"synthetic-private-token"}'
                 kind = "application/json"
-                arrived.set()
+                if path == "/eportal/portal/login":
+                    arrived.set()
             self.send_response(200)
             self.send_header("Content-Type", kind)
             self.send_header("Content-Length", str(len(body)))
@@ -94,13 +96,17 @@ def run() -> dict:
 
             stopper = threading.Thread(target=stop, daemon=True)
             stopper.start()
-            summary = capture.run(cancel)
+            summary = capture.run(
+                cancel,
+                launcher=lambda driver: capture.launch(driver, headless=True),
+                wifi_ssid=snapshot.ssid,
+            )
             stopper.join(2)
             text = (support.session.directory / "PortalCapture_session.json").read_text(
                 encoding="utf-8"
             )
             results = {
-                "real_installed_browser_started": summary["request_count"] >= 2,
+                "real_installed_browser_started": summary["request_count"] >= 3,
                 "automatic_navigation_and_local_login_observed": summary["login_request_observed"],
                 "server_summary_observed": summary["server_success_summary_observed"],
                 "synthetic_secrets_hidden": all(
@@ -115,6 +121,8 @@ def run() -> dict:
                 "json_and_text_saved": (
                     support.session.directory / "PortalCapture_session.txt"
                 ).is_file(),
+                "capture_can_fill_wifi_editor": capture.wifi_configuration()
+                == (snapshot.ssid, origin + "/a79.htm", origin),
                 "real_campus_authentication": "not_attempted",
                 "vault_access": "not_attempted",
             }

@@ -16,6 +16,7 @@ from campus_autoconnect.core.models import (
     AuthStage,
     AuthState,
     ErrorCode,
+    LinkType,
     NetworkSnapshot,
     ProfileIssue,
 )
@@ -75,6 +76,7 @@ class MonitorControl:
             "instance": raw["instance"],
             "state": state.value,
             "error_code": code.value,
+            "selected_link": LinkType(raw.get("selected_link", "unknown")).value,
             "attempts": self._integer(raw.get("attempts"), 0, 3),
             "max_attempts": self._integer(raw.get("max_attempts"), 1, 3),
             "operation_running": raw.get("operation_running") is True,
@@ -317,7 +319,7 @@ class MonitorRuntime:
                             if self._changed.is_set():
                                 snapshot = None
                         current = snapshot if snapshot is not None else NetworkSnapshot()
-                        profile = self.profiles.match(current.ssid) if enabled else None
+                        profile = self.profiles.match_network(current) if enabled else None
                         self.coordinator.observe(current, profile, enabled=enabled)
                         if (
                             not self._timed_ready

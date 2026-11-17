@@ -14,7 +14,6 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
-    QDialogButtonBox,
     QFileDialog,
     QGroupBox,
     QHBoxLayout,
@@ -40,9 +39,11 @@ from campus_autoconnect.core.models import (
     AuthState,
     Credentials,
     ErrorCode,
+    LinkType,
     NetworkProfile,
 )
 from campus_autoconnect.core.portal import PROFILE_ISSUE_LABELS, profile_setup_summary
+from campus_autoconnect.core.profiles import new_wired_profile
 from campus_autoconnect.infrastructure.config import validate_ref
 from campus_autoconnect.infrastructure.desktop import DesktopPreferences
 from campus_autoconnect.services.application import ApplicationServices
@@ -121,7 +122,7 @@ class MainWindow(QMainWindow):
         self._poll_worker: _Worker | None = None
         self._automation_revision = self._poll_revision = 0
         self._initial_check = initial_check
-        self.setWindowTitle("校园 Wi-Fi 连接助手 · Campus AutoConnect")
+        self.setWindowTitle("校园网连接助手 · Campus AutoConnect")
         self.setWindowIcon(app_icon())
         self.resize(980, 720)
         self.setMinimumSize(760, 520)
@@ -133,7 +134,7 @@ class MainWindow(QMainWindow):
         logo = QLabel()
         logo.setPixmap(app_icon().pixmap(56, 56))
         header.addWidget(logo)
-        title = QLabel("校园 Wi-Fi 连接助手")
+        title = QLabel("校园网连接助手")
         title.setStyleSheet("font-size: 23px; font-weight: 600;")
         header.addWidget(title)
         header.addStretch()
@@ -152,7 +153,6 @@ class MainWindow(QMainWindow):
             ("credentials", "安全凭据"),
             ("automation", "后台与启动"),
             ("logs", "诊断与监测"),
-            ("capture", "抓包与分析"),
             ("settings", "外观设置"),
             ("help", "使用帮助"),
         ):
@@ -172,7 +172,7 @@ class MainWindow(QMainWindow):
         self.network_status.setStyleSheet("font-size: 22px; font-weight: 600; padding: 12px 0;")
         self.network_status.setTextFormat(Qt.PlainText)
         network_layout.addWidget(self.network_status)
-        self.network_detail = QLabel("SSID：—    Portal 主机：—    最近检测：—")
+        self.network_detail = QLabel("当前连接：—    最近检测：—")
         self.network_detail.setWordWrap(True)
         self.network_detail.setTextFormat(Qt.PlainText)
         network_layout.addWidget(self.network_detail)
@@ -182,14 +182,13 @@ class MainWindow(QMainWindow):
         network_layout.addWidget(self.network_reason)
         self.setup_button = QPushButton("配置当前网络…")
         self.setup_button.setObjectName("configure_current_network")
-        self.setup_button.setEnabled(False)
         network_layout.addWidget(self.setup_button)
         buttons = QHBoxLayout()
         self.check_button = QPushButton("检测网络")
         self.check_button.setObjectName("check_network")
         self.login_button = QPushButton("手动测试认证")
         self.login_button.setObjectName("test_login")
-        self.diagnose_button = QPushButton("查看脱敏诊断")
+        self.diagnose_button = QPushButton("全面诊断")
         self.cancel_button = QPushButton("取消本次操作")
         self.cancel_button.setEnabled(False)
         for button in (
@@ -206,11 +205,10 @@ class MainWindow(QMainWindow):
         self.overview_automation.setWordWrap(True)
         page_layouts["overview"].addWidget(self.overview_automation)
         guidance = QLabel(
-            "开始使用\n\n1. 点击“检测网络”，确认当前连接状态。\n"
-            "2. 点击“配置当前网络”，从本人脱敏抓包填写认证页和服务地址。\n"
-            "3. 核对后明确允许 HTTP；升级程序不会自动给旧档案授予许可。\n"
-            "4. 前往“安全凭据”录入纯账号或带一次正确后缀的完整账号，先手动测试。\n\n"
-            "人工核验清单与问题反馈模板位于成品目录的“使用与核验”文件夹。"
+            "接上校园网线或加入校园 Wi-Fi 后，点击“配置当前网络”。"
+            "有线请填写学校的 HTTPS 登录网址。Wi-Fi 可在编辑器里现场抓包并回填。\n"
+            "保存后会检查认证准备情况。可以复用已有凭据，也可以在“安全凭据”录入账号密码，"
+            "再点击“手动测试认证”。"
         )
         guidance.setWordWrap(True)
         page_layouts["overview"].addWidget(guidance)
@@ -222,12 +220,12 @@ class MainWindow(QMainWindow):
         self.credentials_panel = CredentialsPanel()
         page_layouts["credentials"].addWidget(self.credentials_panel)
         page_layouts["credentials"].addStretch()
-        self.profile_group = QGroupBox("可信 Wi-Fi 档案 · 精确 SSID 匹配")
+        self.profile_group = QGroupBox("有线与 Wi-Fi 档案")
         profile_layout = QVBoxLayout(self.profile_group)
         self.table = QTableWidget(0, 6)
         self.table.setObjectName("profiles")
         self.table.setHorizontalHeaderLabels(
-            ["显示名称", "SSID", "启用", "自动认证", "凭据引用", "认证配置"]
+            ["显示名称", "连接", "启用", "自动认证", "凭据引用", "认证配置"]
         )
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -237,8 +235,8 @@ class MainWindow(QMainWindow):
         self.table.verticalHeader().hide()
         profile_layout.addWidget(self.table)
         profile_buttons = QHBoxLayout()
-        self.add_current_button = QPushButton("添加当前 Wi-Fi")
-        self.add_button = QPushButton("手动添加")
+        self.add_current_button = QPushButton("配置当前网络…")
+        self.add_button = QPushButton("手动添加 Wi-Fi")
         self.edit_button = QPushButton("编辑档案")
         self.remove_button = QPushButton("删除档案")
         for button in (
@@ -257,7 +255,7 @@ class MainWindow(QMainWindow):
         transfers.addStretch()
         profile_layout.addLayout(transfers)
         profile_note = QLabel(
-            "导出包含网络名称和可信主机，不含账号密码。导入生成新凭据引用，全部停用，需逐项复核。"
+            "导出包含网络标识与可信主机。导入生成新凭据引用，档案全部停用，需逐项复核。"
         )
         profile_note.setWordWrap(True)
         profile_layout.addWidget(profile_note)
@@ -292,16 +290,13 @@ class MainWindow(QMainWindow):
         self.report_settings = ReportSettingsPanel()
         self.report_settings.setEnabled(services.support is not None)
         page_layouts["settings"].addWidget(self.report_settings)
-        self.capture_panel = CapturePanel()
         self.help_panel = HelpPanel()
         page_layouts["logs"].insertWidget(0, self.diagnostics_panel)
-        page_layouts["capture"].addWidget(self.capture_panel)
-        page_layouts["capture"].addWidget(self.capture_button)
-        page_layouts["capture"].addWidget(self.capture_summary)
         page_layouts["help"].addWidget(self.help_panel)
         self.help_panel.navigate.connect(self.show_page)
         self.browser_capture = BrowserCapture(services.support) if services.support else None
         self._capture_running = False
+        self._capture_editor: ProfileEditor | None = None
         self._credential_reference_revision = 0
         self._credential_action = False
         self._credential_operation_reference = None
@@ -329,7 +324,7 @@ class MainWindow(QMainWindow):
         self.login_button.clicked.connect(lambda: self._network_action(True))
         self.setup_button.clicked.connect(self.configure_current_network)
         self.cancel_button.clicked.connect(self._cancel.set)
-        self.diagnose_button.clicked.connect(self.show_diagnostics)
+        self.diagnose_button.clicked.connect(self.inspect_network)
         self.add_button.clicked.connect(lambda: self.edit_profile())
         self.add_current_button.clicked.connect(self.add_current)
         self.edit_button.clicked.connect(self.edit_selected)
@@ -345,6 +340,7 @@ class MainWindow(QMainWindow):
         panel.save_button.clicked.connect(self.save_credentials)
         panel.delete_button.clicked.connect(self.delete_credentials)
         panel.check_button.clicked.connect(self.check_credentials)
+        panel.reveal_requested.connect(self.reveal_credentials)
         self.table.itemSelectionChanged.connect(self._selection_changed)
         automation = self.automation_panel
         automation.refresh_button.clicked.connect(self.refresh_automation)
@@ -369,7 +365,6 @@ class MainWindow(QMainWindow):
         diag = self.diagnostics_panel
         diag.begin.clicked.connect(self.begin_monitoring)
         diag.inspect.clicked.connect(self.inspect_network)
-        diag.deep.clicked.connect(self.deep_diagnostics)
         diag.finish.clicked.connect(self.finish_monitoring)
         diag.copy.clicked.connect(self.copy_monitoring)
         diag.open.clicked.connect(self.open_report_directory)
@@ -379,12 +374,6 @@ class MainWindow(QMainWindow):
         reports.refresh.clicked.connect(self.refresh_report_statistics)
         reports.cleanup.clicked.connect(self.preview_report_cleanup)
         reports.protected.clicked.connect(self.protect_current_report)
-        self.capture_panel.start.clicked.connect(self.start_browser_capture)
-        self.capture_panel.stop.clicked.connect(self._cancel.set)
-        self.capture_panel.retry.clicked.connect(self.retry_capture_save)
-        self.capture_panel.probe.clicked.connect(
-            lambda: self.browser_capture.probe_requested.set() if self.browser_capture else None
-        )
         self._support_timer = QTimer(self)
         self._support_timer.setInterval(500)
         self._support_timer.timeout.connect(self.refresh_support_view)
@@ -408,25 +397,19 @@ class MainWindow(QMainWindow):
         self.report_settings.setEnabled(enabled and self.services.support is not None)
         self.check_button.setEnabled(enabled)
         self.login_button.setEnabled(enabled)
-        self.setup_button.setEnabled(
-            enabled and bool(self.services.last_result and self.services.last_result.network.ssid)
-        )
+        self.setup_button.setEnabled(enabled)
+        self.diagnose_button.setEnabled(enabled)
         self.cancel_button.setEnabled(busy)
         for button in (self.preferences_save, self.logs_refresh, self.capture_button):
             button.setEnabled(enabled)
         for button in (
             self.diagnostics_panel.begin,
             self.diagnostics_panel.inspect,
-            self.diagnostics_panel.deep,
             self.diagnostics_panel.finish,
-            self.capture_panel.start,
         ):
             button.setEnabled(enabled and self.services.support is not None)
-        self.capture_panel.stop.setEnabled(self._capture_running)
-        self.capture_panel.probe.setEnabled(self._capture_running)
-        self.capture_panel.retry.setEnabled(
-            enabled and bool(self.browser_capture and self.browser_capture.last_payload)
-        )
+        if (panel := self._active_capture_panel()) is not None:
+            self._set_capture_buttons(panel, enabled)
         self.exit_button.setEnabled(not self._quitting)
 
     def _start(
@@ -469,7 +452,9 @@ class MainWindow(QMainWindow):
             self._credential_action = False
         if self._capture_running:
             self._capture_running = False
-            self.capture_panel.state.setText(message)
+            if (panel := self._active_capture_panel()) is not None:
+                panel.state.setText(message)
+                self._show_capture_path(panel)
         if self._shutdown_started:
             self._quitting = self._shutdown_started = False
             self.showNormal()
@@ -491,6 +476,9 @@ class MainWindow(QMainWindow):
             thread.deleteLater()
         self._callback = None
         self._set_busy(False)
+        if self._capture_editor is not None:
+            self._capture_editor.set_capture_active(False)
+            self._capture_editor = None
         if self._quitting:
             self._continue_exit()
         elif self._after_task is not None:
@@ -528,6 +516,7 @@ class MainWindow(QMainWindow):
         def loaded(result):
             preferences, overview, status, startup_error = result
             self.credentials_panel.status.setText(status.label())
+            self.credentials_panel.set_saved_status(status)
             self._preferences_loaded(preferences)
             if overview is not None:
                 self._automation_complete(overview)
@@ -696,7 +685,7 @@ class MainWindow(QMainWindow):
             for row, profile in enumerate(self._profiles):
                 values = (
                     profile.display_name,
-                    profile.ssid,
+                    "有线" if profile.is_wired else profile.ssid,
                     "是" if profile.enabled else "否",
                     "允许" if profile.auto_auth else "关闭",
                     profile.credential_ref,
@@ -720,13 +709,29 @@ class MainWindow(QMainWindow):
         if profile:
             self.credentials_panel.reference.setText(profile.credential_ref)
 
+    def _create_profile_editor(
+        self, profile: NetworkProfile | None = None, current_ssid: str = ""
+    ) -> ProfileEditor:
+        editor = ProfileEditor(self, profile=profile, current_ssid=current_ssid)
+        capture = self.browser_capture
+        if capture is not None and not editor.wired:
+            panel = editor.add_live_capture()
+            panel.start.clicked.connect(lambda: self._run_capture(editor, retry=False))
+            panel.stop.clicked.connect(self._cancel.set)
+            panel.retry.clicked.connect(lambda: self._run_capture(editor, retry=True))
+            panel.open.clicked.connect(self.open_capture_directory)
+            panel.probe.clicked.connect(capture.probe_requested.set)
+        return editor
+
     def edit_profile(self, profile: NetworkProfile | None = None, current_ssid: str = "") -> None:
-        dialog = ProfileEditor(self, profile=profile, current_ssid=current_ssid)
+        dialog = self._create_profile_editor(profile, current_ssid)
         if dialog.exec() == QDialog.Accepted and dialog.result_profile:
+            self._navigate_network_result = False
             self._start(
-                lambda: self.services.profiles.upsert(dialog.result_profile),
-                lambda _: self._profiles_saved(),
-                "正在保存档案…",
+                lambda: self.services.save_profile_and_check(dialog.result_profile, self._cancel),
+                self._profile_checked,
+                "正在保存档案并检查当前连接…",
+                cancellable=True,
             )
 
     def edit_selected(self) -> None:
@@ -737,46 +742,36 @@ class MainWindow(QMainWindow):
         self.edit_profile(profile)
 
     def configure_current_network(self) -> None:
-        result = self.services.last_result
-        if result is None or not result.network.ssid:
-            self.message.setText("请先检测网络，确认当前唯一 SSID。")
-            return
-        ssid = result.network.ssid
-
         def load():
-            profiles = self.services.profiles.list()
-            if self.services.profiles.store.warning:
-                raise CampusError(
-                    ErrorCode.CONFIG_ERROR, "档案配置不可用，请先按使用手册修复配置。"
-                )
-            matches = [profile for profile in profiles if profile.ssid == ssid]
-            enabled = [profile for profile in matches if profile.enabled]
-            if len(enabled) == 1:
-                return enabled[0]
-            if len(matches) > 1:
+            snapshot = self.services.authentication.network.snapshot()
+            adapter = snapshot.selected
+            if adapter is None:
                 raise CampusError(
                     ErrorCode.UNTRUSTED_NETWORK,
-                    "当前 SSID 对应多个档案，请在“网络档案”中明确选择要编辑的条目。",
+                    "未识别唯一的可用物理有线连接或 Wi-Fi SSID。请检查网线或 Wi-Fi 连接。",
                 )
-            return matches[0] if matches else None
+            profile = self.services.profiles.for_edit(adapter)
+            if profile is None and adapter.link == LinkType.ETHERNET:
+                profile = new_wired_profile(adapter)
+            return profile, adapter.ssid or ""
 
-        def loaded(profile):
+        def loaded(details):
+            profile, ssid = details
             self._after_task = lambda: self.edit_profile(profile=profile, current_ssid=ssid)
 
-        self._start(load, loaded, "正在读取当前网络的档案；不读取凭据…")
+        self._start(load, loaded, "正在识别当前物理连接并查找档案…")
 
-    def _profiles_saved(self) -> None:
+    def _profile_checked(self, result: AuthResult) -> None:
         self.refresh_profiles()
-        self.message.setText(
-            "档案已保存；列表显示配置缺项。请重新检测并先手动测试；概览诊断仍对应上次操作。"
-        )
+        self._network_complete(result)
+        self.message.setText("档案已保存。" + result.message)
+
+    def _profile_removed(self) -> None:
+        self.refresh_profiles()
+        self.message.setText("网络档案已删除。")
 
     def add_current(self) -> None:
-        result = self.services.last_result
-        if not result or not result.network.ssid:
-            self.message.setText("请先检测网络；未识别唯一 SSID 时可手动添加。")
-            return
-        self.edit_profile(current_ssid=result.network.ssid)
+        self.configure_current_network()
 
     def remove_profile(self) -> None:
         profile = self.selected_profile()
@@ -790,7 +785,7 @@ class MainWindow(QMainWindow):
             return
         self._start(
             lambda: self.services.profiles.remove(profile.profile_id),
-            lambda _: self._profiles_saved(),
+            lambda _: self._profile_removed(),
             "正在删除档案…",
         )
 
@@ -831,6 +826,7 @@ class MainWindow(QMainWindow):
         if reference != self.credentials_panel.reference.text().strip():
             return
         self._credential_status(status.label())
+        self.credentials_panel.set_saved_status(status)
         if clear_inputs:
             self.credentials_panel.username.clear()
             self.credentials_panel.password.clear()
@@ -845,6 +841,7 @@ class MainWindow(QMainWindow):
             self.credentials_panel.password.clear()
             self._last_reference = reference
         self.credentials_panel.status.setText("凭据引用已改变；尚未检查当前 Windows 记录。")
+        self.credentials_panel.set_saved_status(None)
         try:
             validate_ref(reference)
         except ValueError:
@@ -855,6 +852,7 @@ class MainWindow(QMainWindow):
         def loaded(status):
             if revision == self._credential_reference_revision:
                 self.credentials_panel.status.setText(status.label())
+                self.credentials_panel.set_saved_status(status)
 
         self._start(
             lambda: self.services.credential_management.snapshot(reference),
@@ -886,7 +884,8 @@ class MainWindow(QMainWindow):
         self.report_settings.protected.blockSignals(True)
         self.report_settings.protected.setChecked(support.session.protected)
         self.report_settings.protected.blockSignals(False)
-        if self._capture_running and self.browser_capture:
+        panel = self._active_capture_panel()
+        if self._capture_running and self.browser_capture and panel is not None:
             states = {
                 "waiting": "等待在途认证结束",
                 "recording": "正在记录专用浏览器",
@@ -894,7 +893,7 @@ class MainWindow(QMainWindow):
                 "partial": "记录中；部分请求未能解析",
                 "failed": "抓包失败",
             }
-            self.capture_panel.state.setText(
+            panel.state.setText(
                 states.get(self.browser_capture.state, "正在结束抓包")
                 + f" · 已记录 {self.browser_capture.count} 条；停止后保存分析。"
             )
@@ -908,24 +907,27 @@ class MainWindow(QMainWindow):
             )
 
     def inspect_network(self) -> None:
-        if self.services.support:
-            self.show_page("logs")
-            self._start(
-                lambda: self.services.support.inspect(self._cancel),
-                lambda _: self.refresh_support_view(),
-                "正在独立分步复查（不登录）…",
-                cancellable=True,
+        self.show_page("logs")
+
+        def complete(report: dict) -> None:
+            if self.services.support:
+                self.refresh_support_view()
+            else:
+                self.diagnostics_panel.output.setPlainText(
+                    json.dumps(report, ensure_ascii=False, indent=2)
+                )
+            self.message.setText(
+                "全面诊断已取消，可查看已取得的结果。"
+                if self._cancel.is_set()
+                else "全面诊断已结束，可查看脱敏结果及报告保存状态。"
             )
 
-    def deep_diagnostics(self) -> None:
-        if self.services.support:
-            self.show_page("logs")
-            self._start(
-                lambda: self.services.support.prepare(self._cancel),
-                lambda result: self.message.setText(result.message),
-                "正在核对实时页面和协议；不读取凭据、不登录…",
-                cancellable=True,
-            )
+        self._start(
+            lambda: self.services.diagnose(self._cancel),
+            complete,
+            "正在检查网络、档案、路由、网关协议与后台状态…",
+            cancellable=True,
+        )
 
     def finish_monitoring(self) -> None:
         if self.services.support:
@@ -1031,39 +1033,80 @@ class MainWindow(QMainWindow):
             )
             self.show_page("help")
 
-    def start_browser_capture(self) -> None:
-        if self.browser_capture is None or self.busy:
+    def _active_capture_panel(self) -> CapturePanel | None:
+        return self._capture_editor.capture_panel if self._capture_editor is not None else None
+
+    def _set_capture_buttons(self, panel: CapturePanel, enabled: bool) -> None:
+        capture = self.browser_capture
+        panel.start.setEnabled(enabled and capture is not None)
+        panel.stop.setEnabled(self._capture_running)
+        panel.probe.setEnabled(self._capture_running)
+        panel.retry.setEnabled(
+            enabled
+            and bool(capture and capture.state == "failed" and capture.last_payload is not None)
+        )
+        panel.open.setEnabled(bool(capture and capture.saved_path))
+
+    def open_capture_directory(self) -> None:
+        if self.browser_capture and (path := self.browser_capture.saved_path):
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(path.parent)))
+
+    def _show_capture_path(self, panel: CapturePanel) -> None:
+        path = self.browser_capture.saved_path if self.browser_capture else None
+        panel.path.setText(f"已写入 {path}" if path else "")
+
+    def _run_capture(self, editor: ProfileEditor, *, retry: bool) -> None:
+        capture = self.browser_capture
+        panel = editor.capture_panel
+        if capture is None or panel is None or self.busy or self._quitting:
             return
-        self.show_page("capture")
+        ssid = editor.ssid_edit.text()
+        self._capture_editor = editor
         self._capture_running = True
+        panel.state.setText("正在重试写入…" if retry else "正在准备专用浏览器…")
+        if not retry:
+            panel.path.clear()
+        editor.set_capture_active(True)
+
+        def run():
+            outcome = capture.retry_save() if retry else capture.run(self._cancel, wifi_ssid=ssid)
+            try:
+                return outcome, capture.wifi_configuration(), ""
+            except CampusError as exc:
+                return outcome, None, exc.message
+
         self._start(
-            lambda: self.browser_capture.run(self._cancel),
-            self._browser_capture_complete,
-            "正在准备专用浏览器；期间暂停本应用的新认证提交…",
-            cancellable=True,
+            run,
+            lambda result: self._browser_capture_complete(editor, panel, result),
+            "正在处理浏览器抓包…",
+            cancellable=not retry,
         )
 
-    def retry_capture_save(self) -> None:
-        if self.browser_capture and not self.busy:
-            self._start(
-                self.browser_capture.retry_save,
-                self._browser_capture_complete,
-                "正在重试保存内存中的脱敏抓包记录…",
-            )
-
-    def _browser_capture_complete(self, summary: dict) -> None:
+    def _browser_capture_complete(
+        self,
+        editor: ProfileEditor,
+        panel: CapturePanel,
+        result: tuple[dict, tuple[str, str, str] | None, str],
+    ) -> None:
+        summary, settings, reason = result
         self._capture_running = False
-        self.capture_panel.output.setPlainText(json.dumps(summary, ensure_ascii=False, indent=2))
         count = summary.get("request_count", 0)
-        self.capture_panel.state.setText(
-            f"已保存 {count} 条记录并完成结构分析。"
-            if count
-            else "已保存空记录；未捕获到登录，不代表成功。"
-        )
-        self.message.setText(
-            "抓包已结束，可打开报告目录。主机/端口仅保留在本地抓包文件，请私下保管。"
-        )
-        self.show_page("capture")
+        message = f"已保存 {count} 条脱敏请求。" if count else "已保存空记录。"
+        if summary.get("capture_state") == "partial":
+            message = "浏览器中断。" + message
+        if settings is not None:
+            ssid, page, api = settings
+            draft_ssid = editor.ssid_edit.text()
+            if not draft_ssid or draft_ssid == ssid:
+                editor.apply_capture(page, api, ssid)
+                message += "认证地址已回填，请核对并保存档案。"
+            else:
+                message += "草稿 SSID 与抓包网络不同，请人工核对。"
+        elif reason:
+            message += reason
+        panel.state.setText(message)
+        self._show_capture_path(panel)
+        self.message.setText(message)
         self.refresh_support_view()
 
     def delete_credentials(self) -> None:
@@ -1092,6 +1135,30 @@ class MainWindow(QMainWindow):
                 "正在主动检查安全存储…",
             )
 
+    def reveal_credentials(self) -> None:
+        panel = self.credentials_panel
+        reference = self._reference()
+        if reference is None or self.busy or self._quitting or not panel.isVisible():
+            return
+        revision = panel.reveal_revision
+        self._credential_action = True
+        self._credential_operation_reference = reference
+
+        def revealed(result: tuple[CredentialStatus, Credentials | None]) -> None:
+            self._credential_action = False
+            if self._quitting or revision != panel.reveal_revision or not panel.isVisible():
+                return
+            status, value = result
+            self._credential_status_for(reference, status)
+            if value is not None:
+                panel.show_saved(value)
+
+        self._start(
+            lambda: self.services.credential_management.reveal(reference),
+            revealed,
+            "正在读取本次要显示的安全凭据…",
+        )
+
     def _network_action(self, login: bool, *, navigate: bool = True) -> None:
         if self.busy or self._quitting:
             return
@@ -1116,7 +1183,10 @@ class MainWindow(QMainWindow):
         # Production workers already recorded/persisted this result. Direct preview/test
         # projections only update memory and never perform report IO on the GUI thread.
         self.services.last_result = result
-        matches = [p for p in self._profiles if p.enabled and p.ssid == result.network.ssid]
+        adapter = result.network.selected
+        matches = [
+            p for p in self._profiles if p.enabled and adapter and p.matches_adapter(adapter)
+        ]
         if (
             len(matches) == 1
             and not self.credentials_panel.username.text()
@@ -1157,10 +1227,17 @@ class MainWindow(QMainWindow):
             f"登录请求：{submit[progress.login_request_attempted]}。"
         )
         self.network_reason.setText("\n".join(details))
-        self.setup_button.setEnabled(bool(result.network.ssid) and not self.busy)
         host = urlsplit(result.portal_url).hostname if result.portal_url else "—"
+        links = result.network.link_diagnostics()
+        connection = {
+            LinkType.ETHERNET: "有线",
+            LinkType.WIFI: f"Wi-Fi（{adapter.ssid if adapter else '未识别'}）",
+            LinkType.UNKNOWN: "待确认",
+        }[result.network.selection]
         self.network_detail.setText(
-            f"SSID：{result.network.ssid or '未识别'}    Portal 主机：{host}\n"
+            f"当前选择：{connection}    有线链路：{links['ethernet_links_up']}    "
+            f"Wi-Fi：{'已连接' if links['wifi_link_up'] else '未连接'}\n"
+            f"Portal 主机：{host}    "
             f"最近检测（UTC）：{result.checked_at}"
         )
         self.message.setText(result.message)
@@ -1171,19 +1248,6 @@ class MainWindow(QMainWindow):
         }:
             self.show_page("logs")
         self.refresh_support_view()
-
-    def show_diagnostics(self) -> None:
-        dialog = QDialog(self)
-        dialog.setWindowTitle("脱敏诊断 · 不含账号、SSID、IP 或响应体")
-        dialog.resize(650, 470)
-        layout = QVBoxLayout(dialog)
-        text = QPlainTextEdit(json.dumps(self.services.diagnostics(), ensure_ascii=False, indent=2))
-        text.setReadOnly(True)
-        layout.addWidget(text)
-        buttons = QDialogButtonBox(QDialogButtonBox.Close)
-        buttons.rejected.connect(dialog.reject)
-        layout.addWidget(buttons)
-        dialog.exec()
 
     def refresh_automation(self) -> None:
         if self.services.automation is not None:
@@ -1269,6 +1333,7 @@ class MainWindow(QMainWindow):
         self._poll_timer.stop()
         self._cancel.set()
         self.credentials_panel.password.clear()
+        self.credentials_panel.hide_saved()
         self.message.setText("正在取消操作并停止后台，请等待有界查询结束…")
         self._continue_exit()
 
@@ -1302,6 +1367,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         self.credentials_panel.password.clear()
+        self.credentials_panel.hide_saved()
         if self._allow_close:
             event.accept()
         elif self.tray_available and self.preferences.close_to_tray and not self._quitting:

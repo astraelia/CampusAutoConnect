@@ -5,10 +5,27 @@ from urllib.parse import parse_qsl, urlsplit
 
 from campus_autoconnect.adapters.eportal import CONFIG_PATH, LOGIN_PATH, STATUS_PATH
 from campus_autoconnect.core.errors import CampusError
-from campus_autoconnect.services.capture_analysis import LOGIN_FIELDS
+from campus_autoconnect.services.capture_analysis import (
+    LOGIN_FIELDS,
+    WIRED_FIELDS,
+    WIRED_LOGIN_PATH,
+    WIRED_STATUS_PATH,
+)
 
-PATHS = {"/a79.htm", CONFIG_PATH, LOGIN_PATH, STATUS_PATH, "/connecttest.txt", "/generate_204"}
-FIELDS = LOGIN_FIELDS | {"vlan", "wlan_vlan_id", "c", "a", "method", "version", "type"}
+PATHS = {
+    "/",
+    "/a79.htm",
+    CONFIG_PATH,
+    LOGIN_PATH,
+    STATUS_PATH,
+    WIRED_LOGIN_PATH,
+    WIRED_STATUS_PATH,
+    "/connecttest.txt",
+    "/generate_204",
+}
+FIELDS = (
+    LOGIN_FIELDS | WIRED_FIELDS | {"vlan", "wlan_vlan_id", "c", "a", "method", "version", "type"}
+)
 
 
 def safe_params(pairs: list[tuple[str, str]]) -> list[dict]:

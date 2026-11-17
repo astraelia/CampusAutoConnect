@@ -133,6 +133,15 @@ class CredentialManagement:
             return self._remember(reference, "error")
         return self._remember(reference, "present" if present else "absent")
 
+    def reveal(self, reference: str) -> tuple[CredentialStatus, Credentials | None]:
+        """Read the selected vault entry for a user-initiated, temporary display."""
+        validate_ref(reference)
+        try:
+            value = self.store.get(reference)
+        except CampusError:
+            return self._remember(reference, "error"), None
+        return self._remember(reference, "present" if value else "absent"), value
+
     def delete(self, reference: str) -> CredentialStatus:
         self.store.delete(reference)
         return self.check(reference)

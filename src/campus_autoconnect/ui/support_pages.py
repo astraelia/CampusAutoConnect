@@ -124,18 +124,18 @@ class DiagnosticPanel(QWidget):
         super().__init__()
         layout = QVBoxLayout(self)
         text = QLabel(
-            "主程序实际记录、独立复查和浏览器抓包分别注明来源。深入诊断只核对页面与实时配置，不读取凭据、不登录。"
+            "全面诊断检查连接选择、联网探测、档案、目标路由、TLS、实时协议和后台状态。"
+            "检查不读取账号密码，不发送登录请求。"
         )
         text.setWordWrap(True)
         layout.addWidget(text)
         self.begin = QPushButton("开始监测")
-        self.inspect = QPushButton("独立分步复查")
-        self.deep = QPushButton("深入诊断（不登录）")
+        self.inspect = QPushButton("运行全面诊断")
         self.finish = QPushButton("结束监测并保存")
         self.copy = QPushButton("复制脱敏监测报告")
         self.open = QPushButton("打开报告目录")
         self.fix = QPushButton("前往当前问题的处理页面")
-        for group in ((self.begin, self.inspect, self.deep), (self.finish, self.copy, self.open)):
+        for group in ((self.inspect, self.begin), (self.finish, self.copy, self.open)):
             row = QHBoxLayout()
             for button in group:
                 row.addWidget(button)
@@ -155,30 +155,37 @@ class CapturePanel(QWidget):
         super().__init__()
         layout = QVBoxLayout(self)
         text = QLabel(
-            "网页对照：开始后自动打开专用 Edge/Chrome 并访问已配置认证页；"
-            "无有效档案时请求 HTTP 探测页发现 Portal。请自行确认学校页面。"
-            "只记录该浏览器；主程序连接记录见诊断页。"
+            "在专用 Edge/Chrome 中确认学校认证页并手动登录一次。"
+            "然后点“停止并保存”，也可直接关闭专用浏览器。"
         )
         text.setWordWrap(True)
         layout.addWidget(text)
         row = QHBoxLayout()
-        self.start = QPushButton("开始抓包并自动打开认证页")
+        self.start = QPushButton("现场抓包并回填")
         self.probe = QPushButton("重新打开认证页")
-        self.stop = QPushButton("停止抓包并保存")
+        self.stop = QPushButton("停止并保存")
         self.retry = QPushButton("重试保存抓包")
+        self.open = QPushButton("打开抓包目录")
         self.probe.setEnabled(False)
         self.stop.setEnabled(False)
         self.retry.setEnabled(False)
+        self.open.setEnabled(False)
         for button in (self.start, self.probe, self.stop):
             row.addWidget(button)
         layout.addLayout(row)
-        layout.addWidget(self.retry)
-        self.state = QLabel("尚未抓包；无需断开或重连 Wi-Fi。")
+        actions = QHBoxLayout()
+        actions.addWidget(self.retry)
+        actions.addWidget(self.open)
+        actions.addStretch()
+        layout.addLayout(actions)
+        self.state = QLabel("尚未抓包。")
         self.state.setWordWrap(True)
+        self.state.setTextFormat(Qt.PlainText)
         layout.addWidget(self.state)
-        self.output = QPlainTextEdit()
-        self.output.setReadOnly(True)
-        layout.addWidget(self.output)
+        self.path = QLabel()
+        self.path.setWordWrap(True)
+        self.path.setTextFormat(Qt.PlainText)
+        layout.addWidget(self.path)
 
 
 class HelpPanel(QWidget):
@@ -257,7 +264,6 @@ class HelpPanel(QWidget):
             "credentials",
             "automation",
             "logs",
-            "capture",
             "settings",
             "help",
         }:

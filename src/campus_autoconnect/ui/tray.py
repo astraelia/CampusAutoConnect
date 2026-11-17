@@ -14,7 +14,7 @@ class TrayController(QObject):
         super().__init__(window)
         self.window = window
         self.tray = QSystemTrayIcon(app_icon(), self)
-        self.tray.setToolTip(f"校园 Wi-Fi 连接助手 · v{__version__}")
+        self.tray.setToolTip(f"校园网连接助手 · v{__version__}")
         self.menu = QMenu(window)
         self.actions: dict[str, QAction] = {}
         for key, label, callback in (
@@ -77,7 +77,7 @@ class TrayController(QObject):
             self.tray.showMessage("连接助手已收起", "从托盘打开窗口；选择“退出程序”会停止后台。")
 
     def update_status(self, text: str) -> None:
-        self.tray.setToolTip("校园 Wi-Fi 连接助手\n" + text)
+        self.tray.setToolTip("校园网连接助手\n" + text)
 
     def close(self) -> None:
         self.tray.hide()

@@ -7,6 +7,7 @@ import ssl
 import threading
 import time
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -14,20 +15,21 @@ import certifi
 import httpx
 
 from campus_autoconnect import __version__ as reference_version
-from campus_autoconnect.adapters.bjut import BJUTPortalAdapter
 from campus_autoconnect.core.errors import CampusError
 from campus_autoconnect.core.models import (
     ErrorCode,
+    LinkType,
     NetworkProfile,
     NetworkSnapshot,
     ProbeEndpoint,
     ProbeObservation,
 )
 from campus_autoconnect.core.network import NetworkProvider, WindowsNetworkProvider
-from campus_autoconnect.core.portal import normalize_authority, validate_target
+from campus_autoconnect.core.portal import normalize_authority, portal_entry, validate_target
 from campus_autoconnect.infrastructure.config import ConfigStore
 from campus_autoconnect.infrastructure.startup import WindowsStartupService
 from campus_autoconnect.security.credentials import WindowsCredentialStore
+from campus_autoconnect.services.authentication import BJUT_ADAPTERS
 from campus_autoconnect.services.connectivity import ConnectivityService, make_client
 from campus_autoconnect.services.inspection_records import Fact, Outcome, Step, exception_type
 from campus_autoconnect.services.monitor import MonitorControl
@@ -378,6 +380,7 @@ class InspectionRunner:
                 "adapter_count": len(snapshot.adapters),
                 "connected": snapshot.connected,
                 "ssid_known": snapshot.ssid is not None,
+                **snapshot.link_diagnostics(),
                 "active_virtual_gateway": any(
                     a.connected and not a.hardware and a.gateways for a in snapshot.adapters
                 ),
@@ -390,7 +393,8 @@ class InspectionRunner:
             self.skip("cancelled" if cancel.is_set() else "network_unreachable")
             return
         profile = self.profile(snapshot)
-        connection = ObservedConnectivity(self.emit, self.run, self.transport).check(cancel)
+        probes = ObservedConnectivity(self.emit, self.run, self.transport)
+        connection = probes.check(cancel)
         if cancel.is_set():
             self.skip("cancelled")
             return
@@ -406,6 +410,18 @@ class InspectionRunner:
             self.skip("network_changed")
             return
         if connection.online:
+            if snapshot.selection == LinkType.ETHERNET and not probes.routes_match(
+                connection, self.network, snapshot
+            ):
+                self.add(
+                    "internet",
+                    "互联网状态",
+                    Outcome.BLOCKED,
+                    "route_unconfirmed",
+                    "探测通过，但 Windows 路由未确认流量经有线接口。",
+                )
+                self.skip("route_unconfirmed")
+                return
             self.add(
                 "internet",
                 "互联网状态",
@@ -450,7 +466,18 @@ class InspectionRunner:
             )
             self.skip("profile_not_matched")
             return
-        portal = connection.portal_url or profile.portal_page_url
+        try:
+            portal = portal_entry(connection.portal_url, profile)
+        except CampusError:
+            self.add(
+                "trust",
+                "Portal 目标安全检查",
+                Outcome.BLOCKED,
+                "untrusted_target",
+                "发现的入口与有线档案确认的网关不一致。",
+            )
+            self.skip("untrusted_target", keys=("capability", "route", "tls"))
+            return
         if not portal:
             self.add(
                 "portal",
@@ -476,11 +503,11 @@ class InspectionRunner:
         if reason not in {"trusted_https", "trusted_http"}:
             self.skip(reason)
             return
-        # These are independent readiness checks. The production adapter currently blocks
-        # before route/TLS transport, so they must not be presented as its execution trace.
-        from dataclasses import replace
+        # Record independent observations alongside the production preparation trace.
 
-        detection = BJUTPortalAdapter().detect(profile, replace(connection, portal_url=portal))
+        detection = BJUT_ADAPTERS[profile.adapter_id]().detect(
+            profile, replace(connection, portal_url=portal)
+        )
         self.add(
             "capability",
             "真实 BJUT 登录能力",
@@ -503,7 +530,7 @@ class InspectionRunner:
             "route_confirmed" if route else "route_unconfirmed",
             "路由复查通过；这不是生产认证流程已走到此处的证据。"
             if route
-            else "无法确认目标走当前 Wi-Fi，或存在虚拟网关/查询警告；不连接认证目标。",
+            else "无法确认目标经过选中的网络接口，或存在虚拟网关或查询警告。",
         )
         if not route or cancel.is_set():
             self.skip("cancelled" if cancel.is_set() else "route_unconfirmed", keys=("tls",))
@@ -556,16 +583,17 @@ class InspectionRunner:
                 "档案主文件损坏或不可读；未使用备份授予信任，也未修改原件。",
             )
             return None
-        matches = [p for p in profiles if p.enabled and p.ssid == snapshot.ssid]
-        profile = matches[0] if snapshot.ssid is not None and len(matches) == 1 else None
+        adapter = snapshot.selected
+        matches = [p for p in profiles if p.enabled and adapter and p.matches_adapter(adapter)]
+        profile = matches[0] if len(matches) == 1 else None
         self.add(
             "profile",
             "精确网络档案",
             Outcome.INFO if profile else Outcome.WARNING,
             "profile_matched" if profile else "untrusted_network",
-            "当前 SSID 精确匹配唯一启用档案；匹配本身不证明网络身份。"
+            "当前连接精确匹配唯一启用档案，后续仍需核对 Portal 身份。"
             if profile
-            else "SSID 未唯一匹配启用档案；仅允许下面的无凭据联网探测。",
+            else "当前连接未唯一匹配启用档案，仅执行无凭据联网探测。",
             {
                 "profile_count": len(profiles),
                 "enabled_match_count": len(matches),

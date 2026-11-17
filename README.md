@@ -1,12 +1,20 @@
 <p align="center"><img src="src/campus_autoconnect/assets/app.png" width="144" alt="Campus AutoConnect 图标"></p>
 
-# Campus AutoConnect · 校园 Wi-Fi 连接助手
+# Campus AutoConnect · 校园网连接助手
 
-面向 **Windows 10/11 x64** 的校园网自动认证工具，首个适配对象为**北京工业大学（BJUT）**。连接校园 Wi-Fi 后，可检测互联网状态，按本人配置的精确网络档案完成认证，并在 Windows 登录后通过托盘持续运行。
+面向 **Windows 10/11 x64** 的校园网自动认证工具，支持北京工业大学（BJUT）的 Wi-Fi ePortal 和有线 Dr.COM HTTPS 认证。Windows 建立连接后，软件按对应网络档案检测联网情况，必要时认证。
 
-**当前版本：1.0.1** · Python 3.12+ · PySide6 · 本地运行 · GPL-3.0
+## 最新版本 · v1.3.0
 
-[下载 Windows 版](https://github.com/astraelia/CampusAutoConnect/releases/latest) · [首次配置](docs/release/CONFIGURATION.md) · [完整手册](docs/release/USER_MANUAL.md) · [各功能说明](docs/release/FEATURES.md) · [常见问题](docs/release/FAQ.md) · [隐私与默认配置](docs/release/PRIVACY.md)
+[下载 Windows 安装程序](https://github.com/astraelia/CampusAutoConnect/releases/download/v1.3.0/CampusAutoConnect-1.3.0-setup-win-x64.exe) · [下载便携 ZIP](https://github.com/astraelia/CampusAutoConnect/releases/download/v1.3.0/CampusAutoConnect-1.3.0-win-x64.zip) · [发布详情和校验值](https://github.com/astraelia/CampusAutoConnect/releases/latest) · [历史版本](https://github.com/astraelia/CampusAutoConnect/releases)
+
+- **Windows 安装向导**提供文件夹浏览、安装位置选择和可选桌面快捷方式。安装后可从开始菜单启动，也可在 Windows「已安装的应用」中卸载。
+- **有线和 Wi-Fi 自动选择**。物理网线接通且 IPv4 和网关就绪时优先处理有线。可自行填写学校的 HTTPS 登录网址，北工大有线认证支持已核对的 Dr.COM 流程。
+- **Wi-Fi 抓包回填**。在档案编辑时用专用浏览器手动登录一次，即可保存脱敏抓包并回填认证地址。关闭专用浏览器也会保存已记录内容。
+- **配置检查和全面诊断**。保存档案时立即检查认证准备情况。全面诊断涵盖选网、档案、路由、TLS、实时协议、凭据后端和后台。
+- **本机凭据查看**。已保存的账号和密码默认以星号显示。按住「显示」查看，点击「隐藏」恢复遮罩。
+
+[安装和升级说明](docs/release/INSTALL_UNINSTALL.md) · [首次配置](docs/release/CONFIGURATION.md) · [完整手册](docs/release/USER_MANUAL.md) · [常见问题](docs/release/FAQ.md) · [完整版本记录](docs/release/CHANGELOG.md)
 
 ## 适用范围与实测状态
 
@@ -14,13 +22,13 @@
 
 **已实测：** 北京工业大学**中蓝公寓宿舍内校园网**能够自动连接。
 
-**待验证：** 本部校区其他区域及其他校区尚待实测，暂不承诺所有区域均可直接使用。不同 SSID、入口、路由或认证分支需要分别配置和验证；1.0.1 完整开机连接耗时及其他电脑兼容性也需单独测试。
+**待验证** · 真实校园网上的有线登录、实际插拔切换和不同区域配置仍需现场验证。
 
-这里的“自动连接”指 **Windows 已连接校园 Wi-Fi 后，由本软件完成校园网认证**。软件不负责搜索、选择或切换 Wi-Fi，也不绕过验证码、设备限制或学校账号权限。
+有线网卡接通且取得 IPv4 地址和网关时优先检查有线。拔线或有线未就绪时检查 Windows 当前连接的 Wi-Fi。应用使用 Windows 的路由和已关联的 Wi-Fi。
 
 ## 下载后是什么状态
 
-仓库和发布包均不附带作者的账号密码、校园 SSID、IP、网关、认证主机、运行配置、日志或抓包。
+每台电脑的有线和 Wi-Fi 档案由使用者配置，账号密码保存在 Windows 安全存储中。
 
 | 项目 | 新电脑 / 新 Windows 用户的初始状态 |
 | --- | --- |
@@ -35,24 +43,23 @@
 
 ## 五步开始使用
 
-1. 从 [Releases](https://github.com/astraelia/CampusAutoConnect/releases) 下载 `CampusAutoConnect-1.0.1-win-x64.zip`，完整解压到本人可写的固定目录。保留 EXE、`_internal` 和文档的相对位置。无需安装 Python；网页抓包需本机已有 Edge 或 Chrome。
-2. 先通过 Windows 连接自己的校园 Wi-Fi，运行 `CampusAutoConnect.exe`。点击“检测网络”，再点击“配置当前网络…”，或到“网络档案”添加档案。
-3. 填写本人核对的精确 SSID、认证页和认证服务地址。只在实际需要时明确允许 HTTP 或页面全零 MAC 兼容。**不要照抄他人的网络参数。** 详细字段见[配置指南](docs/release/CONFIGURATION.md)。
+1. 运行安装程序，点击「浏览」选择可写的安装目录，按需勾选桌面快捷方式。使用便携版时，将 ZIP 完整解压并保留 `_internal`。
+2. 接上校园网线或通过 Windows 连接校园 Wi-Fi，打开「校园网连接助手」，点击「配置当前网络…」。
+3. 有线填写学校的 HTTPS 登录网址。Wi-Fi 可点“现场抓包并回填”，在专用浏览器手动登录后停止保存。核对配置并点击“保存并检查”。[配置指南](docs/release/CONFIGURATION.md)
 4. 在“安全凭据”输入自己的账号密码，保存并等待“已保存并复核”。当前确实待认证时，点击一次“手动测试认证”；原本已联网时会跳过登录。
 5. 手动连接成功后，再打开对应档案的自动认证、全局自动认证并启动后台。需要开机使用时，在“后台与启动”主动开启“登录 Windows 后自动启动到托盘”。
 
-账号密码只存于本机 Windows 安全凭据。软件不会回填已保存的密码；重开后输入框为空属于正常行为。具体步骤见[快速开始](docs/release/QUICK_START.md)和[使用手册](docs/release/USER_MANUAL.md)。
+账号密码只存于本机 Windows 安全凭据。录入新区用于更新凭据，已保存的内容在同页的星号区域查看。具体步骤见[快速开始](docs/release/QUICK_START.md)和[使用手册](docs/release/USER_MANUAL.md)。
 
 ## 功能与入口
 
 | 功能 / 页面 | 作用 | 使用帮助 |
 | --- | --- | --- |
 | 连接概览 | 检测互联网、查看认证阶段、手动认证、取消操作 | [检测与手动认证](docs/release/FEATURES.md#overview) |
-| 网络档案 | 多 SSID、精确匹配、独立许可、导入导出 | [档案管理](docs/release/FEATURES.md#profiles) |
+| 网络档案 | 有线网卡和网关、精确 SSID、Wi-Fi 抓包回填、档案导入导出 | [档案管理](docs/release/FEATURES.md#profiles) · [抓包回填](docs/release/FEATURES.md#capture) |
 | 安全凭据 | 安全保存/更新/删除、写后核对、历史与当前状态 | [凭据管理](docs/release/FEATURES.md#credentials) |
 | 后台与启动 | 自动认证、后台启停、当前用户登录托盘启动、旧路径修复 | [自动认证与启动](docs/release/FEATURES.md#automation) |
-| 诊断与监测 | 脱敏事件、实际记录、独立复查、无凭据深入诊断 | [诊断与监测](docs/release/FEATURES.md#logs) |
-| 抓包与分析 | 专用 Edge/Chrome 网页对照、结构分析、报告保存 | [浏览器抓包](docs/release/FEATURES.md#capture) |
+| 诊断与监测 | 全面检查网卡、联网、档案、路由、TLS、实时协议和后台 | [诊断与监测](docs/release/FEATURES.md#logs) |
 | 外观设置 | 系统/浅/深主题、关闭到托盘、报告保留与清理 | [外观与报告管理](docs/release/FEATURES.md#settings) |
 | 使用帮助 | 12 章离线教程、关键词搜索、操作页跳转 | [帮助页面](docs/release/FEATURES.md#help) |
 | 托盘与完整退出 | 后台常驻、恢复窗口、异步操作、协作退出 | [托盘与退出](docs/release/FEATURES.md#tray) |
@@ -82,7 +89,7 @@ uv sync --locked --python 3.12
 .\.venv\Scripts\python.exe -m campus_autoconnect
 ```
 
-测试和 Windows 目录包构建：
+测试和 Windows 构建：
 
 ```powershell
 uv sync --locked --python 3.12 --group build
@@ -92,7 +99,7 @@ uv sync --locked --python 3.12 --group build
 .\.venv\Scripts\python.exe scripts/build_windows.py
 ```
 
-输出位于 `dist/`。构建目录必须没有配置、日志、抓包或运行报告；发现这些内容会拒绝生成分发包。[开发与验证说明](docs/testing.md)包含隔离检查、临时目录和打包校验方法。
+如需同时生成安装程序，给构建命令加 `--iscc "<Inno Setup 的 ISCC.exe 路径>"`。两种构建产物和 SHA-256 校验文件都在 `dist/`。构建目录必须没有配置、日志、抓包或运行报告。[Inno Setup](https://jrsoftware.org/inno-setup/downloads) · [开发与验证说明](docs/testing.md)
 
 ```text
 src/campus_autoconnect/  当前核心逻辑、Windows适配、GUI/CLI及内置帮助
@@ -105,7 +112,7 @@ docs/release/           安装、配置、每项功能、隐私及排错教程
 
 ## 开发记录与反馈
 
-[项目历史与已知问题](docs/PROJECT_HISTORY.md)记录从 M1 到 1.0.1 的主要建设、失败和修复；[版本记录](docs/release/CHANGELOG.md)列出版本变化。公开仓库使用经过隐私审查的源码快照，不包含开发者的本机运行报告和私人审计资料。
+[项目历史与已知问题](docs/PROJECT_HISTORY.md)记录从 M1 到当前版的主要建设、失败和修复。公开仓库使用经过隐私审查的源码快照。
 
 提交问题前先读[常见问题](docs/release/FAQ.md)，使用[反馈模板](docs/release/FEEDBACK_TEMPLATE.md)，仅提供版本、步骤、错误码和经过检查的脱敏诊断。请勿上传账号密码、真实配置、SSID/IP/认证主机、Cookie、Token、完整 HAR 或凭据截图。
 

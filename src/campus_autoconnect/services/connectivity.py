@@ -1,5 +1,6 @@
 """Bounded, credential-free probes; never follow a discovered redirect."""
 
+import ipaddress
 import socket
 import ssl
 import threading
@@ -16,9 +17,11 @@ from campus_autoconnect import __version__
 from campus_autoconnect.core.models import (
     ConnectivityResult,
     ErrorCode,
+    NetworkSnapshot,
     ProbeEndpoint,
     ProbeObservation,
 )
+from campus_autoconnect.core.network import NetworkProvider
 from campus_autoconnect.core.observation import observe
 
 DEFAULT_PROBES = (
@@ -52,6 +55,21 @@ def request_error_code(exc: BaseException) -> ErrorCode:
     if isinstance(exc, httpx.TimeoutException):
         return ErrorCode.TIMEOUT
     return ErrorCode.NETWORK_UNREACHABLE
+
+
+def _socket_ips(response: httpx.Response) -> tuple[str, str] | None:
+    stream = response.extensions.get("network_stream")
+    if stream is None:
+        return None
+    try:
+        local = ipaddress.ip_address(stream.get_extra_info("client_addr")[0].split("%")[0])
+        peer = ipaddress.ip_address(stream.get_extra_info("server_addr")[0].split("%")[0])
+        return (
+            str(getattr(local, "ipv4_mapped", None) or local),
+            str(getattr(peer, "ipv4_mapped", None) or peer),
+        )
+    except (OSError, AttributeError, ValueError, TypeError, IndexError):
+        return None
 
 
 class _PortalHTML(HTMLParser):
@@ -133,6 +151,26 @@ class ConnectivityService:
             observations=tuple(observations),
         )
 
+    def routes_match(
+        self, result: ConnectivityResult, network: NetworkProvider, snapshot: NetworkSnapshot
+    ) -> bool:
+        adapter = snapshot.selected
+        if adapter is None or not result.online or len(result.observations) != len(self.endpoints):
+            return False
+        for endpoint, observation in zip(self.endpoints, result.observations, strict=True):
+            target = endpoint.url
+            if observation.socket_ips is not None:
+                source, peer = observation.socket_ips
+                if source not in (*adapter.ipv4, *adapter.ipv6):
+                    return False
+                # Verify the address that actually answered, including when IPv6
+                # DNS results exist but this probe succeeded over IPv4.
+                host = f"[{peer}]" if ":" in peer else peer
+                target = f"{urlsplit(target).scheme}://{host}"
+            if not network.route_allows(target, snapshot):
+                return False
+        return True
+
     def _probe(
         self, client: httpx.Client, endpoint: ProbeEndpoint, cancel: threading.Event | None
     ) -> ProbeObservation:
@@ -151,6 +189,11 @@ class ConnectivityService:
                     return ProbeObservation(True, code=ErrorCode.PORTAL_UNRECOGNIZED)
                 if response.status_code >= 500:
                     return ProbeObservation(True, code=ErrorCode.SERVER_ERROR)
+                socket_ips = (
+                    _socket_ips(response)
+                    if response.status_code == endpoint.expected_status
+                    else None
+                )
                 content = bytearray()
                 # Probe payloads are plain text. Avoid decoding untrusted compressed payloads.
                 if response.headers.get("content-encoding", "identity").lower() != "identity":
@@ -169,7 +212,7 @@ class ConnectivityService:
                 )
                 if expected:
                     observe("protocol", role="probe", expected=True)
-                    return ProbeObservation(True, True)
+                    return ProbeObservation(True, True, socket_ips=socket_ips)
                 parser = _PortalHTML()
                 parser.feed(bytes(content).decode("utf-8", errors="replace"))
                 if parser.destination:

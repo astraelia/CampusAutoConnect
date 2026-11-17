@@ -45,7 +45,7 @@ class _NoHttpDetails(logging.Filter):
 _NO_HTTP_DETAILS = _NoHttpDetails()
 
 
-def _protect_http_logs() -> None:
+def protect_http_logs() -> None:
     # Client construction imports its transport and loggers before this is installed.
     # Publish the app's fixed state/error events, never library wire logs.
     for name in ("httpx", *tuple(logging.Logger.manager.loggerDict)):
@@ -53,6 +53,26 @@ def _protect_http_logs() -> None:
             logger = logging.getLogger(name)
             if _NO_HTTP_DETAILS not in logger.filters:
                 logger.addFilter(_NO_HTTP_DETAILS)
+
+
+def read_portal_response(response: httpx.Response) -> bytes:
+    if 300 <= response.status_code < 400:
+        raise CampusError(ErrorCode.UNTRUSTED_TARGET, "认证入口返回重定向，已停止且未跟随。")
+    if response.status_code >= 500:
+        raise CampusError(ErrorCode.SERVER_ERROR, "认证服务暂时不可用。")
+    if response.status_code != 200:
+        raise CampusError(ErrorCode.MANUAL_ACTION, "认证服务拒绝请求，请在浏览器中核对。")
+    if response.headers.get("content-encoding", "identity").lower() != "identity":
+        raise protocol_error()
+    body = bytearray()
+    start = time.monotonic()
+    for chunk in response.iter_bytes():
+        if len(body) + len(chunk) > MAX_RESPONSE_BYTES:
+            raise protocol_error()
+        if time.monotonic() - start > 6:
+            raise CampusError(ErrorCode.TIMEOUT, "认证服务读取超时。")
+        body.extend(chunk)
+    return bytes(body)
 
 
 class BJUTPortalAdapter:
@@ -107,26 +127,6 @@ class BJUTPortalAdapter:
             True, target_url=target, message="已配置受限 ePortal 分支；提交前需核对实时会话和配置。"
         )
 
-    @staticmethod
-    def _read(response: httpx.Response) -> bytes:
-        if 300 <= response.status_code < 400:
-            raise CampusError(ErrorCode.UNTRUSTED_TARGET, "认证入口返回重定向，已停止且未跟随。")
-        if response.status_code >= 500:
-            raise CampusError(ErrorCode.SERVER_ERROR, "认证服务暂时不可用。")
-        if response.status_code != 200:
-            raise CampusError(ErrorCode.MANUAL_ACTION, "认证服务拒绝请求，请在浏览器中核对。")
-        if response.headers.get("content-encoding", "identity").lower() != "identity":
-            raise protocol_error()
-        body = bytearray()
-        start = time.monotonic()
-        for chunk in response.iter_bytes():
-            if len(body) + len(chunk) > MAX_RESPONSE_BYTES:
-                raise protocol_error()
-            if time.monotonic() - start > 6:
-                raise CampusError(ErrorCode.TIMEOUT, "认证服务读取超时。")
-            body.extend(chunk)
-        return bytes(body)
-
     def prepare(
         self, profile: NetworkProfile, network: NetworkSnapshot, guard: Callable[[str], None]
     ) -> None:
@@ -144,14 +144,14 @@ class BJUTPortalAdapter:
         validate_target(config_url, profile)
         try:
             with self._make_client() as client:
-                _protect_http_logs()
+                protect_http_logs()
                 guard(page)
                 observe("http_start", role="page")
                 with client.stream("GET", page) as response:
                     observe("http_response", role="page", http_status=response.status_code)
                     try:
                         context = EPortalContext.from_page(
-                            self._read(response),
+                            read_portal_response(response),
                             network.wifi.ipv4,
                             allow_zero_mac=profile.allow_zero_mac,
                         )
@@ -168,7 +168,7 @@ class BJUTPortalAdapter:
                     "GET", config_url, params=configuration_params(context, callback)
                 ) as response:
                     observe("http_response", role="config", http_status=response.status_code)
-                    payload = parse_jsonp(self._read(response), callback)
+                    payload = parse_jsonp(read_portal_response(response), callback)
                 config = EPortalConfig.from_response(payload)
                 if payload["data"].get("domain_name", "") != "":
                     raise protocol_error()
@@ -244,7 +244,7 @@ class BJUTPortalAdapter:
             ]
             observe("protocol", account_normalized=True)
             with self._make_client() as client:
-                _protect_http_logs()
+                protect_http_logs()
                 client.cookies.update(self._cookies)
                 guard(target_url)
                 self._status = AuthState.AUTHENTICATING
@@ -252,7 +252,9 @@ class BJUTPortalAdapter:
                 observe("http_start", role="login")
                 with client.stream("GET", target_url, params=params) as response:
                     observe("http_response", role="login", http_status=response.status_code)
-                    accepted = response_accepted(parse_jsonp(self._read(response), callback))
+                    accepted = response_accepted(
+                        parse_jsonp(read_portal_response(response), callback)
+                    )
                 observe("protocol", role="login", accepted=accepted)
             if accepted:
                 submitted_successfully = True

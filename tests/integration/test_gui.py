@@ -25,7 +25,7 @@ pytestmark = pytest.mark.mock
 
 
 @pytest.fixture
-def window(qtbot, profiles, credentials):
+def window(qtbot, profiles, credentials, network):
     class FakeAuthentication:
         def check(self, cancel=None):
             time.sleep(0.08)
@@ -33,7 +33,12 @@ def window(qtbot, profiles, credentials):
 
         login = check
 
-    services = ApplicationServices(profiles, credentials, FakeAuthentication())
+        def prepare_check(self, cancel=None, *, expected_profile=None):
+            return self.check(cancel)
+
+    authentication = FakeAuthentication()
+    authentication.network = network
+    services = ApplicationServices(profiles, credentials, authentication)
     widget = MainWindow(services, initial_check=False)
     qtbot.addWidget(widget)
     widget.show()

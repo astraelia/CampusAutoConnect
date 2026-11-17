@@ -14,9 +14,12 @@ pytestmark = pytest.mark.mock
 
 
 @pytest.mark.parametrize("write_failure", [False, True])
+@pytest.mark.parametrize("ending", ["stop", "browser_closed", "driver_error"])
 def test_browser_capture_auto_navigation_redaction_and_auth_mutex(
-    bjut_service, tmp_path, credentials, monkeypatch, write_failure
+    bjut_service, tmp_path, credentials, monkeypatch, write_failure, ending
 ):
+    from playwright.sync_api import Error as PlaywrightError
+
     auth, requests, _, _ = bjut_service
     auth._operation_lock = FileMutex(tmp_path / "authentication.lock")
     support = SupportService(tmp_path, auth, tmp_path / "reports")
@@ -27,7 +30,9 @@ def test_browser_capture_auto_navigation_redaction_and_auth_mutex(
     class Request:
         resource_type = "document"
         method = "GET"
-        url = "http://portal.example.edu:801/eportal/portal/login?user_account=secret-account&user_password=secret-password"
+
+        def __init__(self, url):
+            self.url = url
 
         def response(self):
             return Response(self)
@@ -59,11 +64,24 @@ def test_browser_capture_auto_navigation_redaction_and_auth_mutex(
 
         def goto(self, url, **kwargs):
             urls.append(url)
-            req = Request()
-            self.callbacks["request"](req)
-            self.callbacks["response"](Response(req))
-            self.callbacks["requestfinished"](req)
-            cancel.set()
+            for address in (
+                url,
+                "http://portal.example.edu:801/eportal/portal/page/loadConfig",
+                "http://portal.example.edu:801/eportal/portal/login"
+                "?user_account=secret-account&user_password=secret-password",
+            ):
+                req = Request(address)
+                self.callbacks["request"](req)
+                self.callbacks["response"](Response(req))
+                self.callbacks["requestfinished"](req)
+            if ending == "stop":
+                cancel.set()
+
+        def wait_for_timeout(self, _):
+            if ending == "browser_closed":
+                self.pages = []
+                raise PlaywrightError("Target page has been closed")
+            raise RuntimeError("synthetic driver interruption")
 
     class Browser:
         closed = False
@@ -76,10 +94,16 @@ def test_browser_capture_auto_navigation_redaction_and_auth_mutex(
 
         def close(self):
             self.closed = True
+            if ending == "browser_closed":
+                raise PlaywrightError("Browser has already been closed")
+
+        def is_connected(self):
+            return not self.closed
 
     browser = Browser()
     monkeypatch.setattr("playwright.sync_api.sync_playwright", lambda: nullcontext(object()))
     original_write = support.session.write
+    ssid = auth.network.snapshot().ssid
     if write_failure:
 
         def deny(*_):
@@ -87,15 +111,28 @@ def test_browser_capture_auto_navigation_redaction_and_auth_mutex(
 
         monkeypatch.setattr(support.session, "write", deny)
         with pytest.raises(CampusError):
-            capture.run(cancel, launcher=lambda _: browser)
+            capture.run(cancel, launcher=lambda _: browser, wifi_ssid=ssid)
         assert capture.state == "failed" and capture.last_payload is not None
         monkeypatch.setattr(support.session, "write", original_write)
         result = capture.retry_save()
     else:
-        result = capture.run(cancel, launcher=lambda _: browser)
+        result = capture.run(cancel, launcher=lambda _: browser, wifi_ssid=ssid)
     assert urls == ["http://portal.example.edu/a79.htm"]
     assert result["login_request_observed"] and result["server_success_summary_observed"]
-    output = (support.session.directory / "PortalCapture_session.json").read_text(encoding="utf-8")
+    assert (
+        result["capture_state"]
+        == {"stop": "stopped", "browser_closed": "browser_closed", "driver_error": "partial"}[
+            ending
+        ]
+    )
+    assert capture.wifi_configuration() == (
+        ssid,
+        "http://portal.example.edu/a79.htm",
+        "http://portal.example.edu:801",
+    )
+    assert capture.saved_path == support.session.directory / "PortalCapture_session.json"
+    assert capture.saved_path.with_suffix(".txt").is_file()
+    output = capture.saved_path.read_text(encoding="utf-8")
     assert all(
         v not in output
         for v in ("secret-account", "secret-password", "secret-token", "secret-cookie")

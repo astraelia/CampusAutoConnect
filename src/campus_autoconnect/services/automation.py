@@ -15,6 +15,7 @@ from campus_autoconnect.core.models import (
     AuthResult,
     AuthState,
     ErrorCode,
+    LinkType,
     NetworkProfile,
     NetworkSnapshot,
 )
@@ -69,8 +70,8 @@ _TRANSIENT = frozenset(
 def readiness(snapshot: NetworkSnapshot) -> tuple[AutomationState | None, ErrorCode]:
     if not snapshot.connected:
         return AutomationState.WAITING_NETWORK, ErrorCode.NETWORK_UNREACHABLE
-    wifi = snapshot.wifi
-    if wifi is None or not wifi.hardware or snapshot.warnings:
+    selected = snapshot.selected
+    if selected is None or (selected.link == LinkType.WIFI and snapshot.warnings):
         return AutomationState.UNTRUSTED, ErrorCode.UNTRUSTED_NETWORK
     if any(
         a.connected and not a.hardware and (a.ipv4 or a.ipv6 or a.gateways)
@@ -79,10 +80,10 @@ def readiness(snapshot: NetworkSnapshot) -> tuple[AutomationState | None, ErrorC
         return AutomationState.BLOCKED, ErrorCode.ROUTE_UNCONFIRMED
     try:
         addresses = [
-            ipaddress.ip_address(value.split("%")[0]) for value in (*wifi.ipv4, *wifi.ipv6)
+            ipaddress.ip_address(value.split("%")[0]) for value in (*selected.ipv4, *selected.ipv6)
         ]
         usable = any(not (a.is_link_local or a.is_loopback or a.is_unspecified) for a in addresses)
-        if not usable or not wifi.gateways:
+        if not usable or not selected.gateways:
             return AutomationState.WAITING_READY, ErrorCode.NETWORK_UNREACHABLE
     except ValueError:
         return AutomationState.WAITING_READY, ErrorCode.NETWORK_UNREACHABLE
@@ -223,8 +224,15 @@ class AutomationCoordinator:
         self.code = result.code
         if self.record_result is not None:
             self.record_result(result)
-        if result.state == AuthState.AUTHENTICATED:
-            self.state = AutomationState.ONLINE
+        if (
+            result.state == AuthState.AUTHENTICATED
+            or result.code == ErrorCode.ALREADY_AUTHENTICATED
+        ):
+            self.state = (
+                AutomationState.ONLINE
+                if result.state == AuthState.AUTHENTICATED
+                else AutomationState.WAITING_READY
+            )
             self.attempts = 0
             if self._profile is not None:
                 self._attempt_counts[self._profile] = 0
@@ -275,7 +283,7 @@ class AutomationCoordinator:
             return (
                 allowed
                 and self.settings.load().enabled
-                and self.profiles.match(current.ssid) == profile
+                and self.profiles.match_network(current) == profile
             )
 
         def work() -> None:
@@ -303,6 +311,7 @@ class AutomationCoordinator:
             return {
                 "state": self.state.value,
                 "error_code": self.code.value,
+                "selected_link": self._network.selection.value,
                 "attempts": self.attempts,
                 "max_attempts": len(self.policy.retry_delays) + 1,
                 "retry_in_seconds": (

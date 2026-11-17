@@ -6,24 +6,35 @@ from dataclasses import replace
 
 from campus_autoconnect.adapters.base import PortalAdapter
 from campus_autoconnect.adapters.bjut import BJUTPortalAdapter
+from campus_autoconnect.adapters.bjut_wired import BJUTWiredAdapter
 from campus_autoconnect.core.errors import CampusError
 from campus_autoconnect.core.models import (
+    BJUT_WIRED_ADAPTER,
     AuthProgress,
     AuthResult,
     AuthStage,
     AuthState,
+    ConnectivityResult,
     ErrorCode,
+    LinkType,
     NetworkProfile,
     NetworkSnapshot,
 )
 from campus_autoconnect.core.network import NetworkProvider
 from campus_autoconnect.core.observation import OperationTrace, observe
-from campus_autoconnect.core.portal import profile_setup_issues, validate_target
+from campus_autoconnect.core.portal import (
+    bjut_wired_portal_supported,
+    portal_entry,
+    profile_setup_issues,
+    validate_target,
+)
 from campus_autoconnect.core.profiles import ProfileService
 from campus_autoconnect.core.state_machine import StateMachine
 from campus_autoconnect.infrastructure.locking import FileMutex
 from campus_autoconnect.security.credentials import CredentialStore
 from campus_autoconnect.services.connectivity import ConnectivityService
+
+BJUT_ADAPTERS = {"bjut": BJUTPortalAdapter, BJUT_WIRED_ADAPTER: BJUTWiredAdapter}
 
 
 class AuthenticationService:
@@ -41,14 +52,19 @@ class AuthenticationService:
         self.profiles = profiles
         self.credentials = credentials
         self.connectivity = connectivity
-        self.adapters = adapters if adapters is not None else {"bjut": BJUTPortalAdapter}
+        self.adapters = adapters if adapters is not None else BJUT_ADAPTERS.copy()
         self._lock = threading.Lock()
         self._operation_lock = operation_lock
         self.trace = trace if trace is not None else OperationTrace()
 
-    def prepare_check(self, cancel: threading.Event | None = None) -> AuthResult:
+    def prepare_check(
+        self,
+        cancel: threading.Event | None = None,
+        *,
+        expected_profile: NetworkProfile | None = None,
+    ) -> AuthResult:
         """Explicit credential-free deep check using the production guards and parser."""
-        return self._run(True, cancel, prepare_only=True)
+        return self._run(True, cancel, prepare_only=True, expected_profile=expected_profile)
 
     def check(self, cancel: threading.Event | None = None) -> AuthResult:
         return self._run(False, cancel)
@@ -68,6 +84,7 @@ class AuthenticationService:
         authorize: Callable[[NetworkSnapshot, NetworkProfile], bool] | None = None,
         *,
         prepare_only: bool = False,
+        expected_profile: NetworkProfile | None = None,
     ) -> AuthResult:
         if not self._lock.acquire(blocking=False):
             return AuthResult(AuthState.UNKNOWN, ErrorCode.BUSY, "已有检测或认证正在运行。")
@@ -100,7 +117,16 @@ class AuthenticationService:
                 stage=AuthStage.COMPLETED if state == AuthState.AUTHENTICATED else stage,
                 profile_matched=profile is not None,
                 portal_page_configured=bool(profile and profile.portal_page_url),
-                api_origin_configured=bool(profile and profile.bjut_api_origin),
+                api_origin_configured=bool(
+                    profile
+                    and (
+                        profile.bjut_api_origin
+                        or (
+                            profile.is_wired
+                            and bjut_wired_portal_supported(profile.portal_page_url)
+                        )
+                    )
+                ),
                 http_auth_allowed=bool(profile and profile.allow_http_auth),
                 zero_mac_allowed=bool(profile and profile.allow_zero_mac),
                 zero_mac_observed=session_fact("zero_mac_observed"),
@@ -150,6 +176,16 @@ class AuthenticationService:
                 return finish(
                     AuthState.DISCONNECTED, ErrorCode.NETWORK_UNREACHABLE, "当前没有可用网络连接。"
                 )
+            if expected_profile is not None:
+                profile = self.profiles.match_network(network)
+                if profile != expected_profile:
+                    stage = mark(AuthStage.PROFILE)
+                    profile = None
+                    return finish(
+                        AuthState.UNKNOWN,
+                        ErrorCode.UNTRUSTED_NETWORK,
+                        "已保存的档案未匹配当前选中的连接，现场检查待连接对应网络后执行。",
+                    )
             machine.transition(AuthState.NETWORK_CONNECTED)
             machine.transition(AuthState.CHECKING)
             stage = mark(AuthStage.CONNECTIVITY)
@@ -166,6 +202,12 @@ class AuthenticationService:
             if result := interrupted():
                 return result
             if connection.online:
+                if not self._online_route_confirmed(connection, network):
+                    return finish(
+                        AuthState.UNKNOWN,
+                        ErrorCode.ROUTE_UNCONFIRMED,
+                        "互联网探测通过，但无法确认流量经选中的有线连接。请检查 Windows 路由。",
+                    )
                 return finish(
                     AuthState.AUTHENTICATED,
                     ErrorCode.ALREADY_AUTHENTICATED,
@@ -178,21 +220,19 @@ class AuthenticationService:
                     "HTTPS 证书验证失败，已停止认证；请检查网络和证书。",
                 )
             stage = mark(AuthStage.PROFILE)
-            profile = self.profiles.match(network.ssid)
+            profile = self.profiles.match_network(network)
             if profile is None:
                 return finish(
                     AuthState.UNKNOWN,
                     ErrorCode.UNTRUSTED_NETWORK,
-                    "当前 SSID 未唯一匹配启用的可信档案；未读取凭据、未发送认证。",
+                    "当前连接未唯一匹配启用的网络档案；未读取凭据、未发送认证。",
                 )
             if login and authorize is not None and not authorize(network, profile):
                 return finish(
                     AuthState.UNKNOWN, ErrorCode.AUTOMATION_DISABLED, "自动认证授权已失效。"
                 )
-            if not portal:
-                # Explicitly configured endpoint is usable when external DNS/probes are blocked.
-                # A discovered untrusted redirect is never replaced with this fallback.
-                portal = profile.portal_page_url or None
+            stage = mark(AuthStage.TARGET)
+            portal = portal_entry(portal, profile)
             if not portal:
                 code = connection.code
                 messages = {
@@ -205,7 +245,6 @@ class AuthenticationService:
                 return finish(
                     AuthState.UNKNOWN, code, messages.get(code, "未识别到 Portal 或联网证据不足。")
                 )
-            stage = mark(AuthStage.TARGET)
             validate_target(portal, profile)
             machine.transition(AuthState.AUTH_REQUIRED)
             if not login:
@@ -230,7 +269,7 @@ class AuthenticationService:
                 return finish(
                     AuthState.AUTH_FAILED,
                     ErrorCode.ROUTE_UNCONFIRMED,
-                    "无法确认认证流量经当前校园 Wi-Fi 发出，请检查 VPN/TUN 和路由。",
+                    "无法确认认证流量经选中的校园网络发出，请检查 VPN/TUN 和路由。",
                 )
 
             def guard(target_url: str) -> None:
@@ -239,12 +278,12 @@ class AuthenticationService:
                     raise CampusError(ErrorCode.CANCELLED, "认证已取消，没有后续请求。")
                 if not self.network.route_allows(target_url, network):
                     raise CampusError(
-                        ErrorCode.ROUTE_UNCONFIRMED, "无法确认校园 Wi-Fi 路由，已停止认证请求。"
+                        ErrorCode.ROUTE_UNCONFIRMED, "无法确认校园网络路由，已停止认证请求。"
                     )
                 current_network = self.network.snapshot()
                 if (
                     current_network.fingerprint != network.fingerprint
-                    or self.profiles.match(current_network.ssid) != profile
+                    or self.profiles.match_network(current_network) != profile
                 ):
                     raise CampusError(ErrorCode.NETWORK_CHANGED, "网络或档案变化，已停止认证请求。")
                 if authorize is not None and not authorize(current_network, profile):
@@ -258,7 +297,7 @@ class AuthenticationService:
             if result := interrupted():
                 return result
             current = self.network.snapshot()
-            current_profile = self.profiles.match(current.ssid)
+            current_profile = self.profiles.match_network(current)
             if current.fingerprint != network.fingerprint or current_profile != profile:
                 return finish(
                     AuthState.AUTH_FAILED,
@@ -275,7 +314,7 @@ class AuthenticationService:
                 return finish(
                     AuthState.AUTH_REQUIRED,
                     ErrorCode.NONE,
-                    "无凭据深入诊断已完成：实时会话和协议符合现有分支；未读取凭据、未登录。",
+                    "实时会话和协议符合现有分支，可进行手动测试认证。本次检查未读取凭据。",
                 )
             stage = mark(AuthStage.CREDENTIALS)
             credential_read_attempted = True
@@ -292,7 +331,7 @@ class AuthenticationService:
             before_submit = self.network.snapshot()
             if (
                 before_submit.fingerprint != network.fingerprint
-                or self.profiles.match(before_submit.ssid) != profile
+                or self.profiles.match_network(before_submit) != profile
             ):
                 return finish(
                     AuthState.AUTH_FAILED, ErrorCode.NETWORK_CHANGED, "网络变化，已阻止凭据提交。"
@@ -332,6 +371,12 @@ class AuthenticationService:
                 return finish(
                     AuthState.UNKNOWN, ErrorCode.NETWORK_CHANGED, "验证期间网络变化，结果无法确认。"
                 )
+            if verified.online and not self._online_route_confirmed(verified, network):
+                return finish(
+                    AuthState.UNKNOWN,
+                    ErrorCode.ROUTE_UNCONFIRMED,
+                    "独立探测通过，但无法确认流量经有线连接，认证结果待核实。",
+                )
             if verified.online and adapter.verify(verified):
                 return finish(
                     AuthState.AUTHENTICATED,
@@ -346,7 +391,8 @@ class AuthenticationService:
         except CampusError as exc:
             target = (
                 AuthState.AUTH_FAILED
-                if machine.state in {AuthState.AUTH_REQUIRED, AuthState.AUTHENTICATING}
+                if exc.code != ErrorCode.ALREADY_AUTHENTICATED
+                and machine.state in {AuthState.AUTH_REQUIRED, AuthState.AUTHENTICATING}
                 else AuthState.UNKNOWN
             )
             return finish(target, exc.code, exc.message)
@@ -362,3 +408,8 @@ class AuthenticationService:
                 self._operation_lock.release()
             self._lock.release()
             self.trace.end(trace_token)
+
+    def _online_route_confirmed(self, result: ConnectivityResult, network: NetworkSnapshot) -> bool:
+        if network.selection != LinkType.ETHERNET:
+            return True
+        return self.connectivity.routes_match(result, self.network, network)

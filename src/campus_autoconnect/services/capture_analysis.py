@@ -7,7 +7,7 @@ from urllib.parse import urlunsplit
 from campus_autoconnect.adapters.eportal import CONFIG_PATH, LOGIN_PATH, STATUS_PATH
 from campus_autoconnect.core.errors import CampusError
 from campus_autoconnect.core.models import ErrorCode
-from campus_autoconnect.core.portal import normalize_bjut_endpoints
+from campus_autoconnect.core.portal import BJUT_WIRED_HOST, normalize_bjut_endpoints
 
 MAX_CAPTURE_BYTES = 2 * 1024 * 1024
 LOGIN_FIELDS = frozenset(
@@ -27,18 +27,56 @@ LOGIN_FIELDS = frozenset(
         "v",
     )
 )
-_SENSITIVE_FIELDS = {"user_account", "user_password", "wlan_user_ip", "wlan_user_mac"}
+_SENSITIVE_FIELDS = {
+    "user_account",
+    "user_password",
+    "wlan_user_ip",
+    "wlan_user_mac",
+    "DDDDD",
+    "upass",
+    "v4ip",
+    "v6ip",
+    "para",
+}
+WIRED_LOGIN_PATH = "/drcom/login"
+WIRED_STATUS_PATH = "/drcom/chkstatus"
+WIRED_FIELDS = frozenset(
+    {
+        "DDDDD",
+        "upass",
+        "0MKKey",
+        "R1",
+        "R2",
+        "R3",
+        "R6",
+        "para",
+        "v4ip",
+        "v6ip",
+        "program_index",
+        "page_index",
+        "encrypt",
+    }
+)
 
 
-def analyze_capture(path: Path) -> dict:
-    """Read an explicit user-selected file, with bounded output independent of its text."""
+def _read_capture(path: Path) -> object:
     try:
         with path.open("rb") as stream:
             raw = stream.read(MAX_CAPTURE_BYTES + 1)
         if len(raw) > MAX_CAPTURE_BYTES:
             raise ValueError
-        payload = json.loads(raw.decode("utf-8-sig"))
-        requests = payload["requests"]
+        return json.loads(raw.decode("utf-8-sig"))
+    except (OSError, ValueError, RecursionError) as exc:
+        raise CampusError(ErrorCode.CONFIG_ERROR, "无法读取脱敏抓包文件或格式不支持。") from exc
+
+
+def analyze_capture(path: Path) -> dict:
+    return analyze_capture_payload(_read_capture(path))
+
+
+def analyze_capture_payload(payload: object) -> dict:
+    """Keep the displayed summary independent of any raw host or parameter value."""
+    try:
         if (
             not isinstance(payload, dict)
             or payload.get("tool")
@@ -46,12 +84,13 @@ def analyze_capture(path: Path) -> dict:
                 "Campus Portal Capture / sanitized v1.1.0",
                 "Campus Portal Capture / sanitized v1.2.0",
             }
-            or not isinstance(requests, list)
-            or not 1 <= len(requests) <= 600
+            or not isinstance(payload.get("requests"), list)
+            or not 1 <= len(payload["requests"]) <= 600
             or type(payload.get("count")) is not int
-            or payload["count"] != len(requests)
+            or payload["count"] != len(payload["requests"])
         ):
             raise ValueError
+        requests = payload["requests"]
         http_count = https_count = failures = 0
         steps = []
         credentials_hidden = True
@@ -65,11 +104,22 @@ def analyze_capture(path: Path) -> dict:
             https_count += url["scheme"] == "https"
             failures += "network_failure" in request
             path_value = url.get("path")
-            if path_value not in ("/a79.htm", CONFIG_PATH, STATUS_PATH, LOGIN_PATH):
+            wired = (
+                url.get("host") == BJUT_WIRED_HOST
+                and url["scheme"] == "https"
+                and path_value in ("/", WIRED_LOGIN_PATH, WIRED_STATUS_PATH, "/a79.htm")
+            )
+            if not wired and path_value not in ("/a79.htm", CONFIG_PATH, STATUS_PATH, LOGIN_PATH):
                 continue
             query = url.get("query", [])
             if not isinstance(query, list) or len(query) > 80:
                 raise ValueError
+            post = request.get("post_data")
+            if wired and isinstance(post, dict) and post.get("type") == "form":
+                post_fields = post.get("fields")
+                if not isinstance(post_fields, list) or len(post_fields) > 80:
+                    raise ValueError
+                query = query + post_fields
             fields = []
             method_one = False
             for item in query:
@@ -79,7 +129,7 @@ def analyze_capture(path: Path) -> dict:
                 value = item.get("value")
                 if not isinstance(value, str):
                     raise ValueError
-                if name in LOGIN_FIELDS:
+                if name in LOGIN_FIELDS or (wired and name in WIRED_FIELDS):
                     fields.append(name)
                 method_one |= name == "login_method" and value == "1"
                 if name in _SENSITIVE_FIELDS and value != "[empty]":
@@ -106,9 +156,16 @@ def analyze_capture(path: Path) -> dict:
                     "success_text_signal": summary.get("text_signal") == "login_success",
                 }
             )
-        login_steps = [step for step in steps if step["path"] == LOGIN_PATH]
+        login_steps = [
+            step
+            for step in steps
+            if step["path"] in (LOGIN_PATH, WIRED_LOGIN_PATH)
+            or (step["path"] == "/" and {"DDDDD", "upass"} <= set(step["fields"]))
+        ]
         success = any(
-            step["integer_result"] == 1 and step["success_text_signal"] for step in login_steps
+            step["integer_result"] == 1
+            and (step["path"] == WIRED_LOGIN_PATH or step["success_text_signal"])
+            for step in login_steps
         )
         return {
             "kind": "local_capture_structure_only",
@@ -140,15 +197,16 @@ def analyze_capture(path: Path) -> dict:
 
 def capture_endpoints(path: Path) -> tuple[str, str]:
     """Local editor hints only. Never grants HTTP permission or modifies any profile."""
-    analysis = analyze_capture(path)
+    return capture_endpoints_from_payload(_read_capture(path))
+
+
+def capture_endpoints_from_payload(payload: object) -> tuple[str, str]:
+    if not isinstance(payload, dict) or not payload.get("requests"):
+        raise CampusError(ErrorCode.CONFIG_ERROR, "未抓到完整登录。请在专用浏览器中手动登录一次。")
+    analysis = analyze_capture_payload(payload)
     if not analysis["login_request_observed"] or not analysis["sensitive_query_values_hidden"]:
         raise CampusError(ErrorCode.CONFIG_ERROR, "请选择已脱敏且包含实际登录请求的抓包文件。")
     try:
-        with path.open("rb") as stream:
-            raw = stream.read(MAX_CAPTURE_BYTES + 1)
-        if len(raw) > MAX_CAPTURE_BYTES:
-            raise ValueError
-        payload = json.loads(raw.decode("utf-8-sig"))
         locations: dict[str, set[str]] = {"/a79.htm": set(), CONFIG_PATH: set(), LOGIN_PATH: set()}
         for request in payload["requests"]:
             entry = request["url"]

@@ -30,6 +30,8 @@ uv sync --locked --group build --cache-dir .cache/uv --link-mode copy
 
 ## 构建产物核对
 
+同时构建安装版时，安装 [Inno Setup](https://jrsoftware.org/inno-setup/downloads)，确认其 Languages 目录包含 [ChineseSimplified.isl](https://jrsoftware.org/inno-setup/translations)，并运行 `python scripts/build_windows.py --iscc "<ISCC.exe 路径>"`。构建脚本会为安装 EXE 和便携 ZIP 分别生成 SHA-256 校验文件。
+
 输出限定build/dist，完整保留目录。若旧输出含reports、日志、真实配置或抓包，先在本人私密位置妥善保管，改用干净构建目录；脚本拒绝将它们纳入分发，不自动删除本人数据。
 
 核对BUILD_INFO源码提交/dirty标记、组件版本/许可、EXE x64资源、SHA256SUMS逐文件、ZIP CRC及旁附SHA-256。源码归档与WindowsZIP均无运行配置；全新用户目录应为空档案、自动认证关闭且无登录任务。

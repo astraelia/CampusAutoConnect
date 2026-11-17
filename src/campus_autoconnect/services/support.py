@@ -62,7 +62,9 @@ class SupportService:
             self.report.add(step)
 
     def inspect(self, cancel: threading.Event) -> dict:
-        self.begin()
+        self._renew_if_closed()
+        with self._lock:
+            self.last_diagnostic.pop("deep_check", None)
         from campus_autoconnect.services.inspection_records import Evidence, Outcome
 
         if getattr(sys, "frozen", False):
@@ -105,21 +107,28 @@ class SupportService:
         runner = InspectionRunner(self.directory, self.add, run=run)
         runner.context()
         runner.inspect(cancel)
+        if not cancel.is_set():
+            self._record_preparation(self.authentication.prepare_check(cancel))
         self.save()
         return self.payload()
 
     def prepare(self, cancel: threading.Event) -> AuthResult:
         self.begin()
         result = self.authentication.prepare_check(cancel)
-        self.last_diagnostic["deep_check"] = {
-            "source": "explicit_credential_free_preparation",
-            "state": result.state.value,
-            "error_code": result.code.value,
-            "authentication": result.progress.diagnostic(),
-            "checked_at": result.checked_at,
-        }
+        self._record_preparation(result)
         self.save()
         return result
+
+    def _record_preparation(self, result: AuthResult) -> None:
+        with self._lock:
+            self.last_diagnostic["deep_check"] = {
+                "source": "explicit_credential_free_preparation",
+                "state": result.state.value,
+                "error_code": result.code.value,
+                "authentication": result.progress.diagnostic(),
+                "links": result.network.link_diagnostics(),
+                "checked_at": result.checked_at,
+            }
 
     def record(self, diagnostic: dict) -> None:
         self._renew_if_closed()

@@ -1,11 +1,12 @@
 """Composition root and privacy-preserving diagnostic projection."""
 
 import logging
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 
 from campus_autoconnect import __version__
-from campus_autoconnect.core.models import AuthResult
+from campus_autoconnect.core.models import AuthResult, NetworkProfile
 from campus_autoconnect.core.network import WindowsNetworkProvider
 from campus_autoconnect.core.profiles import ProfileService
 from campus_autoconnect.infrastructure.automation import AutomationStore
@@ -52,6 +53,22 @@ class ApplicationServices:
         # Deliberately never retained in last_result, logs, configuration or diagnostics.
         return analyze_capture(path)
 
+    def save_profile_and_check(
+        self, profile: NetworkProfile, cancel: threading.Event | None = None
+    ) -> AuthResult:
+        self.profiles.upsert(profile)
+        result = self.authentication.prepare_check(cancel, expected_profile=profile)
+        self.record_result(result)
+        return result
+
+    def diagnose(self, cancel: threading.Event) -> dict:
+        if self.support is not None:
+            self.support.record(self.diagnostics())
+            return self.support.inspect(cancel)
+        result = self.authentication.prepare_check(cancel)
+        self.record_result(result)
+        return self.diagnostics()
+
     def record_result(self, result: AuthResult) -> None:
         self.last_result = result
         if self.event_logger is not None:
@@ -76,7 +93,7 @@ class ApplicationServices:
         return {
             "version": __version__,
             "phase": "M3_manual_verification_pending",
-            "real_bjut_protocol": "observed_eportal_implemented_http_opt_in",
+            "real_bjut_protocol": "eportal_wifi_and_https_drcom_wired",
             "field_verification": {
                 "source": "user_feedback_2026_10_18",
                 "version": "1.0.0",
@@ -84,6 +101,7 @@ class ApplicationServices:
                 "windows_logon_autostart_and_auto_login": "confirmed",
                 "current_release_performance": "pending_retest",
                 "other_computers_and_regions": "not_verified",
+                "wired_real_login": "pending",
             },
             "state": result.state.value if result else "NOT_CHECKED",
             "error_code": result.code.value if result else "none",
@@ -91,6 +109,7 @@ class ApplicationServices:
             "checked_at": result.checked_at if result else None,
             "adapter_count": len(result.network.adapters) if result else 0,
             "ssid_known": result.network.ssid is not None if result else False,
+            "links": result.network.link_diagnostics() if result else None,
             "portal_discovered": result.portal_url is not None if result else False,
             "network_warnings": list(result.network.warnings) if result else [],
             "environment_proxy_policy": "ignored",

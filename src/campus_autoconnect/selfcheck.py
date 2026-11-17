@@ -33,30 +33,50 @@ def isolated_data():
 def runtime_check() -> dict:
     import ssl
 
+    import certifi
     import httpx
     from PySide6 import __version__ as qt_version
 
     from campus_autoconnect.infrastructure.launch import monitor_command
     from campus_autoconnect.security.credentials import WindowsCredentialStore
+    from campus_autoconnect.services.connectivity import make_client
 
     launch = monitor_command()
     launch.validate()
-    context = ssl.create_default_context()
-    client = httpx.Client(trust_env=False, verify=True, follow_redirects=False)
-    client.close()
     import playwright
 
     driver = Path(playwright.__file__).parent / "driver"
-    return {
+    result = {
         "playwright_driver_available": (driver / "node.exe").is_file()
         and (driver / "package/cli.js").is_file(),
         "background_executable_available": True,
-        "tls_certificate_verification": context.verify_mode == ssl.CERT_REQUIRED,
-        "windows_vault_backend_available": type(WindowsCredentialStore._backend()).__name__
-        == "WinVaultKeyring",
         "qt_version": qt_version,
         "httpx_version": httpx.__version__,
     }
+    try:
+        context = ssl.create_default_context(cafile=certifi.where())
+        result["tls_certificate_verification"] = (
+            context.verify_mode == ssl.CERT_REQUIRED
+            and context.check_hostname
+            and context.cert_store_stats()["x509_ca"] > 0
+        )
+    except OSError as exc:
+        result["tls_certificate_verification"] = False
+        result["tls_failure_type"] = type(exc).__name__
+    try:
+        with make_client():
+            result["https_client_available"] = True
+    except OSError as exc:
+        result["https_client_available"] = False
+        result["https_client_failure_type"] = type(exc).__name__
+    try:
+        result["windows_vault_backend_available"] = (
+            type(WindowsCredentialStore._backend()).__name__ == "WinVaultKeyring"
+        )
+    except (CampusError, OSError) as exc:
+        result["windows_vault_backend_available"] = False
+        result["vault_backend_failure_type"] = type(exc).__name__
+    return result
 
 
 def browser_check() -> dict:
@@ -287,7 +307,6 @@ def gui_check(screenshots: Path | None) -> dict:
     from campus_autoconnect.ui.app import configure_application
     from campus_autoconnect.ui.instance import GuiInstance
     from campus_autoconnect.ui.main_window import MainWindow
-    from campus_autoconnect.ui.profile_editor import ProfileEditor
     from campus_autoconnect.ui.theme import app_icon, apply_theme
 
     app = QApplication([])
@@ -402,9 +421,7 @@ def gui_check(screenshots: Path | None) -> dict:
             }
         )
         report["embedded_help_chapters"] = len(window.help_panel.chapters) == 12
-        report["embedded_capture_controls"] = window.capture_panel.start.text().startswith(
-            "开始抓包"
-        )
+        report["standalone_capture_tab_removed"] = "capture" not in window.pages
         report["credential_status_separate"] = "留空" in window.credentials_panel.draft.text()
         report["capture_summary_available"] = "HTTP 16" in window.capture_summary.text()
         services.support.report_overview()
@@ -434,8 +451,7 @@ def gui_check(screenshots: Path | None) -> dict:
                         ):
                             raise OSError("Screenshot failed")
                         scroll.verticalScrollBar().setValue(0)
-            editor = ProfileEditor(
-                window,
+            editor = window._create_profile_editor(
                 profile=NetworkProfile(
                     "synthetic",
                     "示例宿舍",
@@ -449,6 +465,11 @@ def gui_check(screenshots: Path | None) -> dict:
             report["http_permission_default_off"] = not editor.allow_http.isChecked()
             report["zero_mac_permission_default_off"] = not editor.allow_zero_mac.isChecked()
             report["http_editor_available"] = editor.capture_button.isVisible()
+            report["embedded_capture_controls"] = (
+                editor.capture_panel is not None
+                and editor.capture_panel.start.isVisible()
+                and editor.capture_panel.start.text() == "现场抓包并回填"
+            )
             if screenshots is not None and not editor.grab().save(
                 str(screenshots / f"m3-{theme}-http-editor.png")
             ):

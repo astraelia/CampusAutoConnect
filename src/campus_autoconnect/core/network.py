@@ -17,8 +17,13 @@ from typing import Protocol
 from urllib.parse import urlsplit
 
 from campus_autoconnect.core.errors import CampusError
-from campus_autoconnect.core.models import ErrorCode, NetworkAdapter, NetworkSnapshot
-from campus_autoconnect.core.network_native import NativeFailure, NativeNetwork, NativeQueryError
+from campus_autoconnect.core.models import ErrorCode, LinkType, NetworkAdapter, NetworkSnapshot
+from campus_autoconnect.core.network_native import (
+    NativeFailure,
+    NativeNetwork,
+    NativeQueryError,
+    classify_link,
+)
 
 
 class NetworkProvider(Protocol):
@@ -191,6 +196,8 @@ $items = @(Get-NetAdapter | Sort-Object InterfaceIndex | ForEach-Object {
         guid = [string]$a.InterfaceGuid
         connected = ($a.Status -eq 'Up')
         hardware = [bool]$a.HardwareInterface
+        if_type = [int]$a.InterfaceType
+        physical_medium = [int]$a.NdisPhysicalMedium
         ipv4 = @($ip | Where-Object { $_.AddressFamily -eq 'IPv4' } |
             ForEach-Object { $_.IPAddress })
         ipv6 = @($ip | Where-Object { $_.AddressFamily -eq 'IPv6' } |
@@ -278,6 +285,7 @@ def parse_adapters(raw: str, ssids: dict[str, str]) -> tuple[NetworkAdapter, ...
                 ipv6=tuple(item.get("ipv6") or ()),
                 gateways=tuple(item.get("gateways") or ()),
                 dns=tuple(item.get("dns") or ()),
+                link_type=classify_link(item.get("if_type", 0), item.get("physical_medium", 0)),
             )
         )
     return normalize_adapters(tuple(result))
@@ -380,8 +388,8 @@ class WindowsNetworkProvider:
                 self._route_ms = min(86400000, round((time.monotonic() - start) * 1000))
 
     def _route_allows(self, url: str, snapshot: NetworkSnapshot) -> bool:
-        wifi = snapshot.wifi
-        if not wifi or not wifi.hardware or snapshot.warnings:
+        selected = snapshot.selected
+        if not selected or (selected.link == LinkType.WIFI and snapshot.warnings):
             return False
         # Conservatively reject active virtual gateways before resolving the portal.
         if any(a.connected and not a.hardware and a.gateways for a in snapshot.adapters):
@@ -398,7 +406,7 @@ class WindowsNetworkProvider:
                     if current.fingerprint != snapshot.fingerprint:
                         return False
             value = self._run(
-                _ROUTE_SCRIPT, json.dumps({"host": urlsplit(url).hostname, "index": wifi.index})
+                _ROUTE_SCRIPT, json.dumps({"host": urlsplit(url).hostname, "index": selected.index})
             )
             return json.loads(value) is True
         except (CampusError, ValueError, TypeError):

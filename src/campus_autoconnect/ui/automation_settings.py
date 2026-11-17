@@ -138,6 +138,9 @@ class AutomationPanel(QGroupBox):
             f"\n登录任务：{run_label}；最近启动（本地）：{last_run}；结果：{result_label}。"
             "任务运行状态不代表已完成校园网认证。"
         )
+        selected = {"ethernet": "有线", "wifi": "Wi-Fi"}.get(monitor.get("selected_link"))
+        if selected:
+            self.status.setText(self.status.text() + f"\n后台当前选择：{selected}")
         progress = monitor.get("last_authentication")
         if progress:
             self.status.setText(
