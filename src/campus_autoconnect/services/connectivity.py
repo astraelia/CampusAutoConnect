@@ -28,6 +28,14 @@ DEFAULT_PROBES = (
     ProbeEndpoint("http://www.msftconnecttest.com/connecttest.txt", 200, b"Microsoft Connect Test"),
     ProbeEndpoint("https://connectivitycheck.gstatic.com/generate_204", 204, b""),
 )
+FALLBACK_HTTPS_PROBE = ProbeEndpoint(
+    "https://captive.apple.com/hotspot-detect.html",
+    200,
+    b"<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>\n",
+)
+_FALLBACK_ERRORS = frozenset(
+    {ErrorCode.TIMEOUT, ErrorCode.DNS_ERROR, ErrorCode.NETWORK_UNREACHABLE, ErrorCode.SERVER_ERROR}
+)
 
 
 def make_client(*, transport: httpx.BaseTransport | None = None) -> httpx.Client:
@@ -95,11 +103,24 @@ class ConnectivityService:
         *,
         transport: httpx.BaseTransport | None = None,
         client_factory: Callable[[], httpx.Client] | None = None,
+        https_fallback: ProbeEndpoint | None = None,
     ) -> None:
         # Production success requires independent hosts and at least one TLS probe.
         if not 1 <= len(endpoints) <= 8:
             raise ValueError("探测端点数量须为 1–8 个。")
+        if https_fallback is not None:
+            fallback_url = urlsplit(https_fallback.url)
+            hosts = {urlsplit(endpoint.url).hostname for endpoint in endpoints}
+            if (
+                len(endpoints) != 2
+                or len(hosts) != 2
+                or fallback_url.scheme != "https"
+                or fallback_url.hostname is None
+                or fallback_url.hostname in hosts
+            ):
+                raise ValueError("备用探测须使用与两个主端点不同的 HTTPS 主机。")
         self.endpoints = endpoints
+        self.https_fallback = https_fallback
         self.transport = transport
         self._make_client = client_factory or (lambda: make_client(transport=self.transport))
 
@@ -114,6 +135,13 @@ class ConnectivityService:
                 for endpoint in self.endpoints
             ]
             observations = [future.result() for future in futures]
+        if (
+            self.https_fallback is not None
+            and any(probe.expected for probe in observations)
+            and any(probe.code in _FALLBACK_ERRORS for probe in observations)
+            and not any(probe.portal_url for probe in observations)
+        ):
+            observations.append(self._probe_endpoint(self.https_fallback, cancel))
         if cancel is not None and cancel.is_set():
             return ConnectivityResult(code=ErrorCode.CANCELLED)
         return self._combine(observations)
@@ -127,14 +155,20 @@ class ConnectivityService:
             return self._probe(client, endpoint, cancel)
 
     def _combine(self, observations: list[ProbeObservation]) -> ConnectivityResult:
-        hosts = {urlsplit(p.url).hostname for p in self.endpoints}
-        online = (
-            len(observations) >= 2
-            and len(hosts) >= 2
-            and any(urlsplit(p.url).scheme == "https" for p in self.endpoints)
-            and all(p.expected for p in observations)
-        )
+        endpoints = self._observed_endpoints(len(observations))
+        matched = [
+            urlsplit(endpoint.url)
+            for endpoint, probe in zip(endpoints, observations, strict=True)
+            if probe.expected
+        ]
         portal = next((p.portal_url for p in observations if p.portal_url), None)
+        fallback_matched = len(observations) > len(self.endpoints) and observations[-1].expected
+        online = (
+            len({parts.hostname for parts in matched}) >= 2
+            and any(parts.scheme == "https" for parts in matched)
+            and portal is None
+            and (len(matched) == len(observations) or fallback_matched)
+        )
         codes = [p.code for p in observations if p.code != ErrorCode.NONE]
         return ConnectivityResult(
             online=online,
@@ -151,13 +185,22 @@ class ConnectivityService:
             observations=tuple(observations),
         )
 
+    def _observed_endpoints(self, count: int) -> tuple[ProbeEndpoint, ...]:
+        if self.https_fallback is not None and count == len(self.endpoints) + 1:
+            return (*self.endpoints, self.https_fallback)
+        return self.endpoints
+
     def routes_match(
         self, result: ConnectivityResult, network: NetworkProvider, snapshot: NetworkSnapshot
     ) -> bool:
         adapter = snapshot.selected
-        if adapter is None or not result.online or len(result.observations) != len(self.endpoints):
+        endpoints = self._observed_endpoints(len(result.observations))
+        if adapter is None or not result.online or len(result.observations) != len(endpoints):
             return False
-        for endpoint, observation in zip(self.endpoints, result.observations, strict=True):
+        confirmed = 0
+        for endpoint, observation in zip(endpoints, result.observations, strict=True):
+            if not observation.expected:
+                continue
             target = endpoint.url
             if observation.socket_ips is not None:
                 source, peer = observation.socket_ips
@@ -169,7 +212,8 @@ class ConnectivityService:
                 target = f"{urlsplit(target).scheme}://{host}"
             if not network.route_allows(target, snapshot):
                 return False
-        return True
+            confirmed += 1
+        return confirmed >= 2
 
     def _probe(
         self, client: httpx.Client, endpoint: ProbeEndpoint, cancel: threading.Event | None

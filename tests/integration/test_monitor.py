@@ -9,7 +9,11 @@ from campus_autoconnect.core.errors import CampusError
 from campus_autoconnect.core.models import AuthProgress, AuthResult, AuthStage, AuthState, ErrorCode
 from campus_autoconnect.infrastructure.automation import AutomationStore
 from campus_autoconnect.infrastructure.locking import FileMutex
-from campus_autoconnect.services.automation import AutomationCoordinator, AutomationPolicy
+from campus_autoconnect.services.automation import (
+    AutomationCoordinator,
+    AutomationPolicy,
+    AutomationState,
+)
 from campus_autoconnect.services.monitor import MonitorControl, MonitorRuntime
 
 pytestmark = pytest.mark.mock
@@ -162,6 +166,50 @@ def test_enabled_runtime_reacts_to_disk_profile_and_switch_changes(runtime, prof
         wait_for(lambda: runtime.coordinator.state.value == "DISABLED")
     finally:
         runtime.control.request_stop()
+        thread.join(4)
+    assert not thread.is_alive()
+
+
+def test_network_change_before_submission_refreshes_without_native_event(
+    runtime, profile, profiles, network, snapshot
+):
+    profile = replace(profile, auto_auth=True)
+    profiles.upsert(profile)
+    runtime.settings.set_enabled(True)
+    runtime.coordinator.policy = AutomationPolicy(settle_seconds=0.01, snapshot_interval=30)
+    changed = replace(snapshot, adapters=(replace(snapshot.adapters[0], ipv4=("192.0.2.42",)),))
+    checks = []
+    operations = []
+    runtime.coordinator.record_result = operations.append
+
+    class Authentication:
+        def login(self, cancel, *, authorize):
+            if not checks:
+                checks.append(authorize(snapshot, profile))
+                network.current = changed
+                return AuthResult(
+                    AuthState.UNKNOWN,
+                    ErrorCode.NETWORK_CHANGED,
+                    "Mock change during connectivity check",
+                    snapshot,
+                    progress=AuthProgress(
+                        stage=AuthStage.CONNECTIVITY, login_request_attempted=False
+                    ),
+                )
+            checks.append(authorize(changed, profile))
+            return AuthResult(AuthState.AUTHENTICATED, ErrorCode.NONE, "Mock success", changed)
+
+    runtime.coordinator.authentication = Authentication()
+    stop = threading.Event()
+    thread = threading.Thread(target=lambda: runtime.run(stop=stop, duration=4))
+    thread.start()
+    try:
+        wait_for(lambda: runtime.coordinator.state == AutomationState.ONLINE)
+        assert checks == [True, True]
+        assert [result.code for result in operations] == [ErrorCode.NETWORK_CHANGED, ErrorCode.NONE]
+        assert runtime.coordinator.attempts == 0
+    finally:
+        stop.set()
         thread.join(4)
     assert not thread.is_alive()
 

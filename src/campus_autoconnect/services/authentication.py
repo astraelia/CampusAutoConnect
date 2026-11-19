@@ -263,9 +263,10 @@ class AuthenticationService:
             if not detection.recognized or not detection.target_url:
                 # Adapter messages are fixed internal strings, not remote server messages.
                 return finish(AuthState.AUTH_FAILED, detection.code, detection.message)
-            validate_target(detection.target_url, profile)
+            target_url = detection.target_url
+            validate_target(target_url, profile)
             stage = mark(AuthStage.ROUTE)
-            if not self.network.route_allows(detection.target_url, network):
+            if not self.network.route_allows(target_url, network):
                 return finish(
                     AuthState.AUTH_FAILED,
                     ErrorCode.ROUTE_UNCONFIRMED,
@@ -293,7 +294,10 @@ class AuthenticationService:
 
             # Preparation contains no credentials. Validate live page/configuration first.
             stage = mark(AuthStage.PREPARE)
-            adapter.prepare(profile, network, guard)
+            prepared_target = adapter.prepare(profile, network, guard)
+            if prepared_target is not None:
+                guard(prepared_target)
+                target_url = prepared_target
             if result := interrupted():
                 return result
             current = self.network.snapshot()
@@ -338,7 +342,7 @@ class AuthenticationService:
                 )
             if result := interrupted():
                 return result
-            if not self.network.route_allows(detection.target_url, before_submit):
+            if not self.network.route_allows(target_url, before_submit):
                 return finish(
                     AuthState.AUTH_FAILED,
                     ErrorCode.ROUTE_UNCONFIRMED,
@@ -357,7 +361,7 @@ class AuthenticationService:
             machine.transition(AuthState.AUTHENTICATING)
             stage = mark(AuthStage.SUBMIT)
             authentication_called = True
-            reply = adapter.authenticate(detection.target_url, credentials)
+            reply = adapter.authenticate(target_url, credentials)
             del credentials
             if not reply.accepted:
                 return finish(AuthState.AUTH_FAILED, reply.code, reply.message)
@@ -382,6 +386,18 @@ class AuthenticationService:
                     AuthState.AUTHENTICATED,
                     ErrorCode.NONE,
                     "认证响应已接受，独立互联网探测验证通过。",
+                )
+            if profile.is_wired:
+                if verified.code == ErrorCode.TLS_ERROR:
+                    return finish(
+                        AuthState.UNKNOWN,
+                        ErrorCode.TLS_ERROR,
+                        "网关已接受登录，联网探测的 HTTPS 证书验证失败。",
+                    )
+                return finish(
+                    AuthState.UNKNOWN,
+                    ErrorCode.VERIFICATION_PENDING,
+                    "网关已接受登录，互联网状态待独立验证。",
                 )
             return finish(
                 AuthState.UNKNOWN,

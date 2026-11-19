@@ -5,6 +5,7 @@ from dataclasses import replace
 import pytest
 
 from campus_autoconnect.core.models import (
+    AuthProgress,
     AuthResult,
     AuthState,
     ErrorCode,
@@ -46,7 +47,12 @@ class Authentication:
         self.started.set()
         assert self.gate.wait(3), "Mock worker was not released"
         if cancel.is_set():
-            return AuthResult(AuthState.UNKNOWN, ErrorCode.CANCELLED, "Mock cancelled")
+            return AuthResult(
+                AuthState.UNKNOWN,
+                ErrorCode.CANCELLED,
+                "Mock cancelled",
+                progress=AuthProgress(login_request_attempted=False),
+            )
         if not authorize(self.snapshot, self.profile):
             return AuthResult(AuthState.UNKNOWN, ErrorCode.AUTOMATION_DISABLED, "Mock revoked")
         return self.results.pop(0) if len(self.results) > 1 else self.results[0]
@@ -245,6 +251,44 @@ def test_switch_cancels_and_drains_old_work_then_discards_stale_completion(setup
     assert auth.calls == 2
     assert len(recorded) == 1
     assert recorded[0].state == AuthState.AUTHENTICATED
+
+
+def test_cancelled_preflight_does_not_exhaust_authentication_budget(setup, snapshot):
+    c, auth, clock, _, profile, recorded = setup
+    for _ in range(4):
+        auth.gate.clear()
+        auth.started.clear()
+        clock.advance(2)
+        c.tick()
+        assert auth.started.wait(1)
+        c.invalidate()
+        c.observe(snapshot, profile, enabled=True)
+        auth.gate.set()
+        finish(c)
+        assert c.attempts == 0
+    start(c, clock)
+    assert c.state == AutomationState.ONLINE
+    assert len(recorded) == 1
+
+
+@pytest.mark.parametrize("attempted", [True, None])
+def test_network_change_with_possible_submission_does_not_rearm(setup, snapshot, attempted):
+    c, auth, clock, _, profile, _ = setup
+    auth.results = [
+        AuthResult(
+            AuthState.UNKNOWN,
+            ErrorCode.NETWORK_CHANGED,
+            "Mock changed",
+            progress=AuthProgress(login_request_attempted=attempted),
+        )
+    ]
+    start(c, clock)
+    c.observe(NetworkSnapshot(), None, enabled=True)
+    c.observe(snapshot, profile, enabled=True)
+    clock.advance(30)
+    c.tick()
+    assert c.state == AutomationState.BLOCKED
+    assert c.attempts == auth.calls == 1
 
 
 def test_stop_does_not_accept_delayed_success_or_launch_again(setup):

@@ -2,7 +2,7 @@
 
 ## 安装
 
-1. 下载 `CampusAutoConnect-1.3.0-setup-win-x64.exe`，双击打开简体中文安装向导。适用 Windows 10/11 x64。
+1. 双击与本次交付版本对应的 `CampusAutoConnect-*-setup-win-x64.exe`，打开简体中文安装向导。适用 Windows 10/11 x64。
 2. 点击「浏览」在 Windows 文件夹选择窗口定位安装目录，也可以直接修改向导中的路径。默认为 `%LOCALAPPDATA%\Programs\CampusAutoConnect`，使用当前用户权限安装。
 3. 按需勾选「创建桌面快捷方式」。安装完成后，可从开始菜单的「校园网连接助手」启动。
 

@@ -34,6 +34,7 @@ class ErrorCode(StrEnum):
     ZERO_MAC_PERMISSION_REQUIRED = "zero_mac_permission_required"
     SESSION_VLAN_INVALID = "session_vlan_invalid"
     ALREADY_AUTHENTICATED = "already_authenticated"
+    VERIFICATION_PENDING = "verification_pending"
     UNTRUSTED_NETWORK = "untrusted_network"
     UNTRUSTED_TARGET = "untrusted_target"
     TLS_ERROR = "tls_error"

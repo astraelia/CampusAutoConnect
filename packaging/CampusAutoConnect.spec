@@ -55,5 +55,5 @@ cli = EXE(
 )
 collection = COLLECT(
     gui, cli, a.binaries, a.datas, strip=False, upx=False,
-    name='CampusAutoConnect-1.3.0-win-x64',
+    name='CampusAutoConnect-1.3.3-win-x64',
 )

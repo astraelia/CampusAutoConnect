@@ -2,9 +2,9 @@ import threading
 import time
 
 import pytest
-from PySide6.QtCore import QThread, QTimer
+from PySide6.QtCore import QRect, QThread, QTimer
 from PySide6.QtNetwork import QLocalSocket
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QSystemTrayIcon
 
 from campus_autoconnect.core.errors import CampusError
 from campus_autoconnect.core.models import AuthResult, AuthState, ErrorCode
@@ -110,6 +110,47 @@ def test_passive_status_does_not_overwrite_unsaved_global_choice(window):
     panel.mark_saved()
     panel.show_status(snapshot)
     assert not panel.enabled.isChecked()
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_normal_desktop_open_ensures_background_and_avoids_competing_check(window, qtbot, enabled):
+    started = threading.Event()
+    checked = threading.Event()
+
+    class Automation:
+        def ensure_background(self):
+            assert QThread.currentThread() != window.thread()
+            started.set()
+
+        def overview(self):
+            assert started.is_set()
+            return {
+                "enabled": enabled,
+                "monitor": {
+                    "running": True,
+                    "state": "WAITING_READY" if enabled else "DISABLED",
+                    "error_code": "none",
+                },
+                "startup": {"available": False},
+            }
+
+        snapshot = overview
+
+    class Authentication:
+        def check(self, _):
+            checked.set()
+            return AuthResult(AuthState.UNKNOWN, ErrorCode.UNTRUSTED_NETWORK, "Synthetic")
+
+    window.services.automation = Automation()
+    window.services.authentication = Authentication()
+    window.initialize()
+    qtbot.waitUntil(lambda: started.is_set() and window._poll_timer.isActive() and not window.busy)
+    if enabled:
+        assert "后台" in window.network_status.text()
+        assert not checked.is_set()
+    else:
+        qtbot.waitUntil(lambda: checked.is_set() and not window.busy)
+    window._poll_timer.stop()
 
 
 def test_failed_shutdown_restores_hidden_window_and_reports_failure(window, qtbot):
@@ -232,6 +273,32 @@ def test_tray_actions_use_same_workers_and_tooltip_has_no_network_identifiers(
     assert "untrusted_network" in tray.tray.toolTip()
     assert "SSID" not in tray.tray.toolTip()
     tray.close()
+
+
+def test_tray_appears_after_shell_recovers_and_window_remains_reachable(window, qtbot, monkeypatch):
+    shell_ready = icon_registered = False
+    monkeypatch.setattr(QSystemTrayIcon, "isSystemTrayAvailable", lambda: shell_ready)
+    monkeypatch.setattr(
+        QSystemTrayIcon, "geometry", lambda _: QRect(0, 0, 16, 16) if icon_registered else QRect()
+    )
+    tray = TrayController(window)
+    try:
+        window.close()
+        assert window.isVisible() and not window._quitting
+        shell_ready = True
+        tray.refresh_availability()
+        assert not window.tray_available
+
+        icon_registered = True
+        qtbot.waitUntil(lambda: window.tray_available, timeout=3500)
+        window.close()
+        assert not window.isVisible()
+
+        shell_ready = icon_registered = False
+        qtbot.waitUntil(window.isVisible, timeout=3500)
+        assert not window.tray_available and not window._quitting
+    finally:
+        tray.close()
 
 
 def test_gui_single_instance_only_accepts_show_message(qapp, qtbot, tmp_path):

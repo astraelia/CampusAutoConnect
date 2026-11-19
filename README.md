@@ -2,14 +2,16 @@
 
 # Campus AutoConnect · 校园网连接助手
 
-面向 **Windows 10/11 x64** 的校园网自动认证工具，支持北京工业大学（BJUT）的 Wi-Fi ePortal 和有线 Dr.COM HTTPS 认证。Windows 建立连接后，软件按对应网络档案检测联网情况，必要时认证。
+面向 **Windows 10/11 x64** 的校园网自动认证工具。Windows 建立连接后，软件按对应网络档案检测联网情况，必要时认证。当前源码支持北工大 Wi-Fi ePortal，以及有线 HTTPS 的 Dr.COM 和 ePortal 分支。
 
-## 最新版本 · v1.3.0
+## 最新公开版 · v1.3.3
 
-[下载 Windows 安装程序](https://github.com/astraelia/CampusAutoConnect/releases/download/v1.3.0/CampusAutoConnect-1.3.0-setup-win-x64.exe) · [下载便携 ZIP](https://github.com/astraelia/CampusAutoConnect/releases/download/v1.3.0/CampusAutoConnect-1.3.0-win-x64.zip) · [发布详情和校验值](https://github.com/astraelia/CampusAutoConnect/releases/latest) · [历史版本](https://github.com/astraelia/CampusAutoConnect/releases)
+[下载 Windows 安装程序](https://github.com/astraelia/CampusAutoConnect/releases/download/v1.3.3/CampusAutoConnect-1.3.3-setup-win-x64.exe) · [下载便携 ZIP](https://github.com/astraelia/CampusAutoConnect/releases/download/v1.3.3/CampusAutoConnect-1.3.3-win-x64.zip) · [发布详情和校验值](https://github.com/astraelia/CampusAutoConnect/releases/tag/v1.3.3) · [历史版本](https://github.com/astraelia/CampusAutoConnect/releases)
+
+v1.3.3 修复有线切网后的自动认证恢复及托盘图标注册问题，优化有线门户预检与登录后的联网复核。打开软件时默认启动或复用后台，自动认证仍由全局和档案两级许可控制。
 
 - **Windows 安装向导**提供文件夹浏览、安装位置选择和可选桌面快捷方式。安装后可从开始菜单启动，也可在 Windows「已安装的应用」中卸载。
-- **有线和 Wi-Fi 自动选择**。物理网线接通且 IPv4 和网关就绪时优先处理有线。可自行填写学校的 HTTPS 登录网址，北工大有线认证支持已核对的 Dr.COM 流程。
+- **有线和 Wi-Fi 自动选择**。物理网线接通且 IPv4 和网关就绪时优先处理有线。北工大有线自动认证支持已核对的 HTTPS Dr.COM 和 ePortal 流程。
 - **Wi-Fi 抓包回填**。在档案编辑时用专用浏览器手动登录一次，即可保存脱敏抓包并回填认证地址。关闭专用浏览器也会保存已记录内容。
 - **配置检查和全面诊断**。保存档案时立即检查认证准备情况。全面诊断涵盖选网、档案、路由、TLS、实时协议、凭据后端和后台。
 - **本机凭据查看**。已保存的账号和密码默认以星号显示。按住「显示」查看，点击「隐藏」恢复遮罩。
@@ -18,11 +20,8 @@
 
 ## 适用范围与实测状态
 
-**理论适用范围：** 在分别完成对应网络的精确 SSID、可信认证入口、安全凭据及自动认证许可配置，且该网络使用本项目已适配的 BJUT ePortal 认证流程时，设计上可用于北京工业大学本部各区域的校园网自动认证。
-
-**已实测：** 北京工业大学**中蓝公寓宿舍内校园网**能够自动连接。
-
-**待验证** · 真实校园网上的有线登录、实际插拔切换和不同区域配置仍需现场验证。
+- **有线校园网**。本版自动认证仅适配北京工业大学已核验的有线门户流程。其他校区或学校的有线网络是否兼容，需现场验证。北工大有线手动认证已有现场记录，v1.3.3 的有线自动认证全流程和实际插拔切换仍待现场验收。
+- **无线 Wi-Fi**。已适配北京工业大学本部使用已核验 ePortal 流程的校园 Wi-Fi，并有自动认证的现场记录。通州校区及其他学校尚未实测，可以通过配置界面的抓包功能辅助识别认证入口。若当地门户与软件已支持的认证流程兼容，并通过实时校验，完成档案配置后才可使用自动认证。
 
 有线网卡接通且取得 IPv4 地址和网关时优先检查有线。拔线或有线未就绪时检查 Windows 当前连接的 Wi-Fi。应用使用 Windows 的路由和已关联的 Wi-Fi。
 
@@ -32,8 +31,9 @@
 
 | 项目 | 新电脑 / 新 Windows 用户的初始状态 |
 | --- | --- |
-| 网络档案 | 空；`config/config.example.json` 只有空的 `profiles` 列表 |
-| 校园账号密码 | 无；需要本人保存至当地 Windows Credential Manager |
+| 网络档案 | 空，`config/config.example.json` 只有空的 `profiles` 列表 |
+| 校园账号密码 | 由本人保存至本机 Windows Credential Manager |
+| 后台监测 | 打开应用时默认启动或复用 |
 | 全局自动认证 | 关闭 |
 | 档案自动认证、HTTP、全零 MAC 兼容许可 | 不预授予；由本人按精确档案确认 |
 | Windows 登录自启动 | 未安装；需本人主动开启 |
@@ -47,7 +47,7 @@
 2. 接上校园网线或通过 Windows 连接校园 Wi-Fi，打开「校园网连接助手」，点击「配置当前网络…」。
 3. 有线填写学校的 HTTPS 登录网址。Wi-Fi 可点“现场抓包并回填”，在专用浏览器手动登录后停止保存。核对配置并点击“保存并检查”。[配置指南](docs/release/CONFIGURATION.md)
 4. 在“安全凭据”输入自己的账号密码，保存并等待“已保存并复核”。当前确实待认证时，点击一次“手动测试认证”；原本已联网时会跳过登录。
-5. 手动连接成功后，再打开对应档案的自动认证、全局自动认证并启动后台。需要开机使用时，在“后台与启动”主动开启“登录 Windows 后自动启动到托盘”。
+5. 手动连接成功后，再开启对应档案的自动认证和全局自动认证。需要 Windows 登录时运行软件，可在“后台与启动”开启“登录 Windows 后自动启动到托盘”。
 
 账号密码只存于本机 Windows 安全凭据。录入新区用于更新凭据，已保存的内容在同页的星号区域查看。具体步骤见[快速开始](docs/release/QUICK_START.md)和[使用手册](docs/release/USER_MANUAL.md)。
 
@@ -116,6 +116,6 @@ docs/release/           安装、配置、每项功能、隐私及排错教程
 
 提交问题前先读[常见问题](docs/release/FAQ.md)，使用[反馈模板](docs/release/FEEDBACK_TEMPLATE.md)，仅提供版本、步骤、错误码和经过检查的脱敏诊断。请勿上传账号密码、真实配置、SSID/IP/认证主机、Cookie、Token、完整 HAR 或凭据截图。
 
-代码测试、冻结程序检查、真实网络测试和最终阶段验收分开记录。中蓝公寓的成功不代表其他校区或所有场景均已验收；软件为非校方项目。
+代码测试、打包程序检查、真实网络测试和最终阶段验收分别记录。Campus AutoConnect 是独立开发项目。
 
 许可证遵循仓库已有的 [GNU GPL v3.0](LICENSE)。Python、Qt/PySide6、Playwright 等第三方组件遵循各自许可证，Windows 包附带相关许可文本。

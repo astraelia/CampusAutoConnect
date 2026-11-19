@@ -23,7 +23,7 @@ from campus_autoconnect.services.authentication import AuthenticationService
 from campus_autoconnect.services.automation import AutomationCoordinator
 from campus_autoconnect.services.automation_application import AutomationService
 from campus_autoconnect.services.capture_analysis import analyze_capture
-from campus_autoconnect.services.connectivity import ConnectivityService
+from campus_autoconnect.services.connectivity import FALLBACK_HTTPS_PROBE, ConnectivityService
 from campus_autoconnect.services.credential_management import CredentialManagement
 from campus_autoconnect.services.desktop import DesktopService
 from campus_autoconnect.services.monitor import MonitorControl, MonitorRuntime
@@ -146,7 +146,7 @@ def build_services(
             network,
             profiles,
             credentials,
-            ConnectivityService(),
+            ConnectivityService(https_fallback=FALLBACK_HTTPS_PROBE),
             operation_lock=operation_lock,
         ),
         event_logger=logger,

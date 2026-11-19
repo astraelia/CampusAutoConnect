@@ -1,6 +1,6 @@
 """Tray UI delegates actions to the same asynchronous main-window services."""
 
-from PySide6.QtCore import QObject, Slot
+from PySide6.QtCore import QObject, QTimer, Slot
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import QMenu, QSystemTrayIcon
 
@@ -38,14 +38,26 @@ class TrayController(QObject):
         window.status_changed.connect(self.update_status)
         self._notified = False
         self.refresh_availability()
+        self._availability_timer = QTimer(self)
+        self._availability_timer.timeout.connect(self.refresh_availability)
+        self._availability_timer.start(2000)
 
+    @Slot()
     def refresh_availability(self) -> None:
-        available = QSystemTrayIcon.isSystemTrayAvailable()
-        self.window.tray_available = available
-        if available:
-            self.tray.show()
-        else:
-            self.tray.hide()
+        if self.window._quitting:
+            return
+        was_available = self.window.tray_available
+        available = False
+        if QSystemTrayIcon.isSystemTrayAvailable():
+            # Qt's visible flag is only a request. Check the shell's actual icon.
+            available = self.tray.isVisible() and self.tray.geometry().isValid()
+            if not available:
+                self.tray.hide()
+                self.tray.show()
+                available = self.tray.geometry().isValid()
+        self.window.set_tray_available(available)
+        if was_available and not available and not self.window.isVisible():
+            self.window.showNormal()
 
     @Slot()
     def restore(self) -> None:
@@ -63,7 +75,6 @@ class TrayController(QObject):
         self.window._network_action(login)
 
     def update_actions(self) -> None:
-        self.refresh_availability()
         enabled = not self.window.busy and not self.window._quitting
         for key in ("check", "login", "start", "stop"):
             self.actions[key].setEnabled(enabled)
@@ -80,4 +91,5 @@ class TrayController(QObject):
         self.tray.setToolTip("校园网连接助手\n" + text)
 
     def close(self) -> None:
+        self._availability_timer.stop()
         self.tray.hide()

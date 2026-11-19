@@ -33,6 +33,7 @@ from campus_autoconnect.core.models import (
 )
 from campus_autoconnect.core.observation import observe
 from campus_autoconnect.core.portal import normalize_bjut_endpoints, validate_target
+from campus_autoconnect.infrastructure.http_body import BodyReadError, read_bounded_body
 from campus_autoconnect.services.connectivity import make_client, request_error_code
 
 
@@ -55,19 +56,29 @@ def protect_http_logs() -> None:
                 logger.addFilter(_NO_HTTP_DETAILS)
 
 
-def read_portal_response(response: httpx.Response) -> bytes:
+def read_portal_response(
+    response: httpx.Response, *, limit: int = MAX_RESPONSE_BYTES, allow_gzip: bool = False
+) -> bytes:
     if 300 <= response.status_code < 400:
         raise CampusError(ErrorCode.UNTRUSTED_TARGET, "认证入口返回重定向，已停止且未跟随。")
     if response.status_code >= 500:
         raise CampusError(ErrorCode.SERVER_ERROR, "认证服务暂时不可用。")
     if response.status_code != 200:
         raise CampusError(ErrorCode.MANUAL_ACTION, "认证服务拒绝请求，请在浏览器中核对。")
-    if response.headers.get("content-encoding", "identity").lower() != "identity":
+    encoding = response.headers.get("content-encoding", "identity").lower()
+    if allow_gzip and encoding == "gzip":
+        try:
+            return read_bounded_body(response, limit)
+        except BodyReadError as exc:
+            if str(exc) == "page_read_timeout":
+                raise CampusError(ErrorCode.TIMEOUT, "认证服务读取超时。") from None
+            raise protocol_error() from None
+    if encoding != "identity":
         raise protocol_error()
     body = bytearray()
     start = time.monotonic()
     for chunk in response.iter_bytes():
-        if len(body) + len(chunk) > MAX_RESPONSE_BYTES:
+        if len(body) + len(chunk) > limit:
             raise protocol_error()
         if time.monotonic() - start > 6:
             raise CampusError(ErrorCode.TIMEOUT, "认证服务读取超时。")

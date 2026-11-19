@@ -49,7 +49,7 @@ from campus_autoconnect.infrastructure.desktop import DesktopPreferences
 from campus_autoconnect.services.application import ApplicationServices
 from campus_autoconnect.services.browser_capture import BrowserCapture
 from campus_autoconnect.services.credential_management import CredentialStatus
-from campus_autoconnect.ui.automation_settings import AutomationPanel
+from campus_autoconnect.ui.automation_settings import AutomationPanel, automation_state_label
 from campus_autoconnect.ui.profile_editor import ProfileEditor
 from campus_autoconnect.ui.settings import CredentialsPanel
 from campus_autoconnect.ui.support_pages import (
@@ -498,12 +498,12 @@ class MainWindow(QMainWindow):
                 if self.services.desktop
                 else self.preferences
             )
-            startup_error = None
-            if self.startup and self.services.automation:
+            background_error = None
+            if self.services.automation:
                 try:
                     self.services.automation.ensure_background()
                 except CampusError as exc:
-                    startup_error = exc.message
+                    background_error = exc.message
             overview = self.services.automation.overview() if self.services.automation else None
             status = self.services.credential_management.snapshot(reference)
             if self.services.support:
@@ -511,10 +511,10 @@ class MainWindow(QMainWindow):
                 from campus_autoconnect.infrastructure.lifecycle import start_watcher
 
                 start_watcher(self.services.support.session)
-            return preferences, overview, status, startup_error
+            return preferences, overview, status, background_error
 
         def loaded(result):
-            preferences, overview, status, startup_error = result
+            preferences, overview, status, background_error = result
             self.credentials_panel.status.setText(status.label())
             self.credentials_panel.set_saved_status(status)
             self._preferences_loaded(preferences)
@@ -523,11 +523,13 @@ class MainWindow(QMainWindow):
             self._poll_timer.start()
             if not self._profiles:
                 self.show_page("help")
-            if startup_error:
-                self.message.setText("登录启动已打开界面；" + startup_error)
+            if background_error:
+                self.message.setText("后台启动未成功。" + background_error)
                 self.showNormal()
             elif self.startup:
                 self.message.setText("登录启动已完成；托盘与后台状态可在“后台与启动”查看。")
+            elif overview and overview["enabled"] and overview["monitor"].get("running"):
+                self.message.setText("后台已启动，将按当前网络档案检查。")
             else:
                 self._after_task = lambda: self._network_action(False, navigate=False)
 
@@ -627,6 +629,8 @@ class MainWindow(QMainWindow):
         monitor = overview["monitor"]
         label = self.automation_panel.status.text()
         self.overview_automation.setText(label)
+        if self.services.last_result is None and overview["enabled"] and monitor.get("running"):
+            self.network_status.setText("后台 · " + automation_state_label(monitor["state"]))
         self.status_changed.emit(f"后台 {monitor['state']} · {monitor['error_code']}")
 
     def poll_status(self) -> None:
@@ -1365,15 +1369,26 @@ class MainWindow(QMainWindow):
     def _shutdown_complete(self, _: object) -> None:
         self._shutdown_success = True
 
+    def set_tray_available(self, available: bool) -> None:
+        self.tray_available = available
+        self.automation_panel.tray_status.setText(
+            "托盘图标已注册，可在任务栏通知区域或隐藏图标菜单中打开。"
+            if available
+            else "托盘图标暂不可用，主窗口会保留。"
+        )
+
     def closeEvent(self, event) -> None:
         self.credentials_panel.password.clear()
         self.credentials_panel.hide_saved()
         if self._allow_close:
             event.accept()
-        elif self.tray_available and self.preferences.close_to_tray and not self._quitting:
-            self.hide()
+        elif self.preferences.close_to_tray and not self._quitting:
             event.ignore()
-            self.hidden_to_tray.emit()
+            if self.tray_available:
+                self.hide()
+                self.hidden_to_tray.emit()
+            else:
+                self.message.setText("托盘图标暂不可用，窗口会保留。可使用“退出程序”结束。")
         else:
             event.ignore()
             self.request_exit()

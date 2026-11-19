@@ -63,7 +63,18 @@ class AutomationPolicy:
 
 
 _TRANSIENT = frozenset(
-    {ErrorCode.NETWORK_UNREACHABLE, ErrorCode.DNS_ERROR, ErrorCode.TIMEOUT, ErrorCode.SERVER_ERROR}
+    {
+        ErrorCode.NETWORK_UNREACHABLE,
+        ErrorCode.DNS_ERROR,
+        ErrorCode.TIMEOUT,
+        ErrorCode.SERVER_ERROR,
+        # The wired retry rechecks both connectivity and the gateway's online session
+        # before the adapter can read credentials or submit another request.
+        ErrorCode.VERIFICATION_PENDING,
+    }
+)
+_PREFLIGHT_INTERRUPTED = frozenset(
+    {ErrorCode.NETWORK_CHANGED, ErrorCode.CANCELLED, ErrorCode.AUTOMATION_DISABLED}
 )
 
 
@@ -117,7 +128,7 @@ class AutomationCoordinator:
         self._stopping = False
         self._worker: threading.Thread | None = None
         self._cancel = threading.Event()
-        self._completed: tuple[int, AuthResult] | None = None
+        self._completed: tuple[int, NetworkProfile | None, AuthResult] | None = None
         self._blocked: dict[NetworkProfile, ErrorCode] = {}
         self._attempt_counts: dict[NetworkProfile, int] = {}
         self._retry_due: dict[NetworkProfile, float] = {}
@@ -193,37 +204,63 @@ class AutomationCoordinator:
             if changed:
                 self.state, self.code = AutomationState.WAITING_READY, ErrorCode.NONE
 
-    def tick(self) -> None:
+    def tick(self) -> bool:
+        """Return true when a fresh network sample is needed before settling again."""
         with self._lock:
             now = self.clock()
             if self._worker is not None:
                 if self._worker.is_alive():
-                    return
+                    return False
                 self._worker.join()
                 self._worker = None
                 completed, self._completed = self._completed, None
-                if completed and completed[0] == self._revision and not self._cancel.is_set():
-                    self._accept(completed[1], now)
+                if completed is not None:
+                    revision, profile, result = completed
+                    if revision == self._revision and not self._cancel.is_set():
+                        if self._accept(result, now):
+                            return True
+                    elif result.progress.login_request_attempted is False:
+                        self._refund_attempt(profile)
             if self._stopping or not self._eligible or self._suspended:
-                return
+                return False
             if self._profile in self._blocked:
                 self.state = AutomationState.BLOCKED
                 self.code = self._blocked[self._profile]
-                return
+                return False
             if now < max(self._due, self._settle_until):
-                return
+                return False
             if self.attempts >= len(self.policy.retry_delays) + 1:
                 self.state, self.code = AutomationState.BLOCKED, ErrorCode.CANCELLED
                 if self._profile is not None:
                     self._blocked[self._profile] = self.code
-                return
+                return False
             self._launch()
+            return False
 
-    def _accept(self, result: AuthResult, now: float) -> None:
+    def _refund_attempt(self, profile: NetworkProfile | None) -> None:
+        if profile is None:
+            return
+        remaining = max(0, self._attempt_counts.get(profile, 0) - 1)
+        self._attempt_counts[profile] = remaining
+        if self._profile == profile:
+            self.attempts = remaining
+
+    def _accept(self, result: AuthResult, now: float) -> bool:
         self.last_result = result
         self.code = result.code
         if self.record_result is not None:
             self.record_result(result)
+        if (
+            result.code in _PREFLIGHT_INTERRUPTED
+            and result.progress.login_request_attempted is False
+        ):
+            # The operation stopped before submission. Sample the current link and
+            # authorizations again without spending a retry on the discarded context.
+            self._refund_attempt(self._profile)
+            self._eligible = False
+            self._key = None
+            self.state = AutomationState.WAITING_READY
+            return True
         if (
             result.state == AuthState.AUTHENTICATED
             or result.code == ErrorCode.ALREADY_AUTHENTICATED
@@ -240,9 +277,7 @@ class AutomationCoordinator:
             self._due = now + self.policy.online_interval
         elif result.code == ErrorCode.BUSY:
             # Another process owns the shared operation lock. No authentication was attempted.
-            self.attempts = max(0, self.attempts - 1)
-            if self._profile is not None:
-                self._attempt_counts[self._profile] = self.attempts
+            self._refund_attempt(self._profile)
             self.state = AutomationState.BACKOFF
             self._due = now + self.policy.snapshot_interval
             if self._profile is not None:
@@ -258,6 +293,7 @@ class AutomationCoordinator:
             self.state = AutomationState.BLOCKED
             if self._profile is not None:
                 self._blocked[self._profile] = result.code
+        return False
 
     def _launch(self) -> None:
         revision, profile, snapshot = self._revision, self._profile, self._network
@@ -294,7 +330,7 @@ class AutomationCoordinator:
                     AuthState.UNKNOWN, ErrorCode.UNKNOWN, "自动任务失败，已停止尝试。"
                 )
             with self._lock:
-                self._completed = (revision, result)
+                self._completed = (revision, profile, result)
 
         self._worker = threading.Thread(target=work, name="campus-authentication", daemon=False)
         self._worker.start()

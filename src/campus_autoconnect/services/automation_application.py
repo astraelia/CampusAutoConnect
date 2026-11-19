@@ -100,7 +100,7 @@ class AutomationService:
             raise CampusError(ErrorCode.CONFIG_ERROR, "后台启动请求失败，请检查运行环境。") from exc
 
     def ensure_background(self) -> None:
-        """Login startup adopts a live monitor without clearing its safety state."""
+        """Desktop startup adopts a live monitor without clearing its safety state."""
         if not self.control.status()["running"]:
             try:
                 self.start_background()

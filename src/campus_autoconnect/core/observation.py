@@ -25,7 +25,7 @@ _FACTS = {
     "active_virtual_gateway",
 }
 _EVENTS = {"stage", "result", "http_start", "http_response", "http_error", "protocol"}
-_ROLES = {"probe", "page", "config", "login", "none"}
+_ROLES = {"probe", "page", "status", "config", "template", "script", "login", "none"}
 
 
 class OperationTrace:

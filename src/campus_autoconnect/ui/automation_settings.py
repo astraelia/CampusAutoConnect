@@ -24,6 +24,10 @@ _LABELS = {
 }
 
 
+def automation_state_label(state: str) -> str:
+    return _LABELS.get(state, "状态待确认")
+
+
 class AutomationPanel(QGroupBox):
     def __init__(self) -> None:
         super().__init__("自动认证与登录启动")
@@ -70,10 +74,13 @@ class AutomationPanel(QGroupBox):
         self.status.setTextFormat(Qt.PlainText)
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
+        self.tray_status = QLabel("托盘图标正在检查。")
+        self.tray_status.setWordWrap(True)
+        layout.addWidget(self.tray_status)
         hint = QLabel(
             "全局开关和当前档案均允许才会自动尝试。临时故障最多 3 次，安全或协议错误即停止。\n"
             "“仅保存开关”不启动后台；勾选后可点击“保存并启动后台”。\n"
-            "登录启动创建托盘并复用现有后台；自动认证许可单独控制。\n"
+            "打开程序默认启动或复用后台；自动认证许可单独控制。\n"
             "旧版登录任务需在高级操作主动修复到当前程序；保留原启用状态，不立即运行任务。\n"
             "收起到托盘后后台继续运行；“退出程序”会停止后台。"
         )
@@ -130,7 +137,7 @@ class AutomationPanel(QGroupBox):
         else:
             result_label = result or "未记录"
         self.status.setText(
-            f"后台：{_LABELS.get(monitor['state'], '状态待确认')}（{monitor['state']}）"
+            f"后台：{automation_state_label(monitor['state'])}（{monitor['state']}）"
             f" · {monitor['error_code']}    登录启动：{startup_label}\n"
             f"已保存的全局自动认证：{'开启' if overview['enabled'] else '关闭'}"
             f"    认证流程次数：{monitor.get('attempts', 0)}/{monitor.get('max_attempts', 3)}"
@@ -152,7 +159,13 @@ class AutomationPanel(QGroupBox):
                     progress.get("login_request_attempted"), "未记录"
                 )
             )
-        if monitor["state"] == "BLOCKED":
+        if monitor["error_code"] == "route_unconfirmed":
+            self.status.setText(
+                self.status.text() + "\n当前校园网路由无法确认。请核对 VPN/TUN 或虚拟网关。"
+            )
+        elif monitor["state"] == "BACKOFF" and monitor["error_code"] == "verification_pending":
+            self.status.setText(self.status.text() + "\n网关已接受登录，后台将重新检查现有会话。")
+        elif monitor["state"] == "BLOCKED":
             self.status.setText(
                 self.status.text()
                 + "\n已锁止，本计数不代表服务器登录次数。先修复具体原因；档案修改后会重新评估，"

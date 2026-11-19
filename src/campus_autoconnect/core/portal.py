@@ -12,8 +12,10 @@ BJUT_WIRED_URL = f"https://{BJUT_WIRED_HOST}/"
 BJUT_WIRED_PAGE = BJUT_WIRED_URL + "a79.htm"
 BJUT_WIRED_STATUS = BJUT_WIRED_URL + "drcom/chkstatus"
 BJUT_WIRED_LOGIN = BJUT_WIRED_URL + "drcom/login"
+BJUT_WIRED_SCRIPT = BJUT_WIRED_URL + "a40.js"
 BJUT_WIRED_API = f"https://{BJUT_WIRED_HOST}:802/eportal/"
 BJUT_WIRED_CONFIG = BJUT_WIRED_API + "portal/page/loadConfig"
+BJUT_WIRED_EPORTAL_LOGIN = BJUT_WIRED_API + "portal/login"
 _WIRED_TEMPLATE = re.compile(
     re.escape(BJUT_WIRED_API) + r"extern/[A-Za-z0-9_-]{1,48}/[A-Za-z0-9_-]{1,48}/pc\.js"
 )
@@ -129,7 +131,9 @@ def validate_target(url: str, profile: NetworkProfile) -> str:
                 BJUT_WIRED_PAGE,
                 BJUT_WIRED_STATUS,
                 BJUT_WIRED_LOGIN,
+                BJUT_WIRED_SCRIPT,
                 BJUT_WIRED_CONFIG,
+                BJUT_WIRED_EPORTAL_LOGIN,
             } and not _WIRED_TEMPLATE.fullmatch(url):
                 raise ValueError
             return BJUT_WIRED_HOST

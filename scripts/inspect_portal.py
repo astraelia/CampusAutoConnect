@@ -5,14 +5,13 @@ import hashlib
 import json
 import re
 import ssl
-import time
-import zlib
 from collections.abc import Callable
 from html.parser import HTMLParser
 from urllib.parse import parse_qsl, urljoin, urlsplit, urlunsplit
 
 import httpx
 
+from campus_autoconnect.infrastructure.http_body import BodyReadError, read_bounded_body
 from campus_autoconnect.services.connectivity import make_client, request_error_code
 
 
@@ -65,27 +64,13 @@ def locator(value: str, base: str) -> dict:
 
 def read_bounded(response: httpx.Response, limit: int, *, seconds: float = 6) -> bytes:
     """Bound compressed wire bytes and decompressed bytes before parsing."""
-    encoding = response.headers.get("content-encoding", "identity").lower()
-    if encoding not in {"identity", "gzip"}:
-        raise InspectionError("unsupported_page_encoding")
-    decoder = zlib.decompressobj(16 + zlib.MAX_WBITS) if encoding == "gzip" else None
-    content = bytearray()
-    wire_bytes = 0
-    started = time.monotonic()
     try:
-        for raw in response.iter_raw():
-            wire_bytes += len(raw)
-            if wire_bytes > limit or time.monotonic() - started > seconds:
-                raise InspectionError("page_transfer_limit")
-            chunk = decoder.decompress(raw, limit - len(content) + 1) if decoder else raw
-            if len(content) + len(chunk) > limit:
-                raise InspectionError("page_size_limit")
-            content.extend(chunk)
-    except zlib.error as exc:
-        raise InspectionError("invalid_compressed_page") from exc
-    if decoder and (not decoder.eof or decoder.unused_data):
-        raise InspectionError("invalid_compressed_page")
-    return bytes(content)
+        return read_bounded_body(response, limit, seconds=seconds)
+    except BodyReadError as exc:
+        code = str(exc)
+        raise InspectionError(
+            "page_transfer_limit" if code == "page_read_timeout" else code
+        ) from exc
 
 
 def tls_failure(exc: BaseException) -> dict:

@@ -332,7 +332,8 @@ class MonitorRuntime:
                         self.coordinator.fail(exc.code)
                         snapshot = None
                         sample_due = self.clock() + self.coordinator.policy.snapshot_interval
-                    self.coordinator.tick()
+                    if self.coordinator.tick():
+                        sample_due = self.clock()
                     if now >= write_due:
                         self._write_status(instance)
                         write_due = self.clock() + 1.0

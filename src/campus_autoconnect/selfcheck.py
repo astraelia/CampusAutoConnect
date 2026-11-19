@@ -213,8 +213,8 @@ ConvertTo-Json -Compress -InputObject (Inspect-ManagedTask $existing)
     return report
 
 
-def startup_ui_check() -> dict:
-    """Exercise the actual --startup dispatcher with isolated data and auto-auth off."""
+def startup_ui_check(*, startup: bool = True) -> dict:
+    """Exercise a desktop entry point with isolated data and auto-auth off."""
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     from PySide6.QtCore import QCoreApplication, QEvent, QTimer
     from PySide6.QtWidgets import QApplication
@@ -248,15 +248,20 @@ def startup_ui_check() -> dict:
                         return
                     overview = services.automation.cached_status
                     if overview and overview["monitor"]["state"] == "DISABLED":
-                        checks["startup_dispatch_used"] = self.startup
+                        entry_check = (
+                            "startup_dispatch_used" if startup else "normal_desktop_open_used"
+                        )
+                        checks[entry_check] = self.startup == startup
                         checks["background_running_disabled"] = overview["monitor"]["running"]
                         checks[
                             "global_auth_still_off"
                         ] = not services.automation.settings.load().enabled
                         checks["tray_or_visible_fallback"] = (
-                            not self.isVisible() if self.tray_available else self.isVisible()
+                            not self.isVisible()
+                            if startup and self.tray_available
+                            else self.isVisible()
                         )
-                        checks["presentation"] = "tray" if self.tray_available else "visible_window"
+                        checks["presentation"] = "visible_window" if self.isVisible() else "tray"
                         checks["no_automatic_report_session"] = not any(
                             path.is_dir() for path in services.support.session.root.iterdir()
                         )
@@ -273,7 +278,8 @@ def startup_ui_check() -> dict:
         desktop_app.MainWindow = ProbeWindow
         desktop_app.build_services = lambda: services
         try:
-            checks["entry_exit_zero"] = entry._dispatch(["--startup"]) == 0
+            result = entry._dispatch(["--startup"]) if startup else desktop_app.main()
+            checks["entry_exit_zero"] = result == 0
             checks["background_stopped_on_exit"] = not services.automation.control.status()[
                 "running"
             ]
@@ -502,6 +508,7 @@ def main(arguments: list[str]) -> int:
             "background",
             "startup",
             "startup-ui",
+            "desktop-ui",
             "credentials",
             "browser",
             "network",
@@ -526,6 +533,7 @@ def main(arguments: list[str]) -> int:
                 "background": background_check,
                 "startup": startup_check,
                 "startup-ui": startup_ui_check,
+                "desktop-ui": lambda: startup_ui_check(startup=False),
                 "credentials": credential_check,
                 "network": network_check,
             }[args.mode]()

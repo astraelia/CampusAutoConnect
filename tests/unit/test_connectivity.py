@@ -36,6 +36,45 @@ def test_200_wrong_body_not_success():
     assert not service.check().online
 
 
+@pytest.mark.parametrize("failure", ["timeout", "tls", "redirect", "wrong_fallback_body"])
+def test_independent_https_fallback_is_used_only_for_a_transient_probe_failure(
+    failure, network, snapshot, monkeypatch
+):
+    fallback = ProbeEndpoint("https://three.example.test/check", 200, b"expected-three")
+    contacted = []
+
+    def respond(request):
+        host = request.url.host
+        contacted.append(host)
+        if host == "one.example.test":
+            return httpx.Response(200, content=b"expected-one")
+        if host == "three.example.test":
+            return httpx.Response(
+                200, content=b"login" if failure == "wrong_fallback_body" else b"expected-three"
+            )
+        if failure == "tls":
+            raise httpx.ConnectError("synthetic", request=request) from ssl.SSLError("synthetic")
+        if failure == "redirect":
+            return httpx.Response(302, headers={"location": "https://portal.example.test/"})
+        raise httpx.ReadTimeout("synthetic", request=request)
+
+    service = ConnectivityService(
+        ENDPOINTS, transport=httpx.MockTransport(respond), https_fallback=fallback
+    )
+    result = service.check()
+    assert result.online is (failure == "timeout")
+    assert ("three.example.test" in contacted) is (failure in {"timeout", "wrong_fallback_body"})
+    if failure == "timeout":
+        monkeypatch.setattr(network, "route_allows", lambda url, _: url != ENDPOINTS[1].url)
+        assert service.routes_match(result, network, snapshot)
+        monkeypatch.setattr(network, "route_allows", lambda url, _: url != fallback.url)
+        assert not service.routes_match(result, network, snapshot)
+    elif failure == "tls":
+        assert result.code == ErrorCode.TLS_ERROR
+    elif failure == "redirect":
+        assert result.portal_url == "https://portal.example.test/"
+
+
 def test_redirect_discovered_not_followed():
     seen = []
 

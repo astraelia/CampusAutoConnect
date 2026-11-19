@@ -95,7 +95,8 @@ def finalize() -> None:
         "内嵌使用帮助含 12 章教程；诊断及抓包报告在程序目录 reports。凭据留空不表示未保存。\n"
         "无需安装 Python。先阅读“使用与核验/快速开始.md”和“人工核验清单.md”。\n"
         "出厂网络档案为空；新电脑需本人配置网络档案和 Windows 安全凭据。\n"
-        "中蓝公寓 Wi-Fi 有旧版实测记录。新版有线校园网登录待现场验收。\n"
+        "已适配北工大本部使用已核验 ePortal 流程的 Wi-Fi 及北工大已核验的有线门户。\n"
+        "北工大有线手动登录已有现场记录。本版有线自动认证、通州校区及其他学校仍待实测。\n"
         "本版使用原生网络查询及受控 PowerShell 回退；HTTP 兼容需在对应档案中明确勾选。\n"
         "先退出旧版及其托盘窗口，再启动本版；完整保留 _internal 文件夹。\n"
         "接校园网线或加入校园 Wi-Fi → 配置当前网络 → 保存并检查 → 手动测试认证。\n"
@@ -105,7 +106,7 @@ def finalize() -> None:
         "故障时点“全面诊断”，查看选网、路由、TLS、实时协议及后台状态。\n"
         "旧档案显示待补全；修改入口后自动认证默认取消勾选，先手动测试。\n"
         "认证页全零 MAC 需在当前档案明确允许兼容；VLAN=0 保留页面原值。\n"
-        "手动成功后再配置自动认证；后台可保存并启动，旧任务可主动修复到当前目录。\n"
+        "打开软件时默认启动或复用后台。手动成功后再开启全局和档案自动认证。\n"
         "自动认证默认关闭，登录启动任务默认不安装。\n"
         "登录后立即创建托盘，网络就绪后认证；升级后请主动修复旧任务以移除旧延迟。\n"
         "新电脑需重新保存 Windows 安全凭据并核对网络档案。日常连接不自动保存完整报告。\n"
@@ -180,20 +181,21 @@ def finalize() -> None:
         "architecture": platform.machine(),
         "dependencies": versions,
         "signed": False,
-        "real_bjut_authentication": "wifi_previously_field_verified_wired_field_test_pending",
+        "real_bjut_authentication": "wifi_and_wired_manual_previously_field_verified",
         "field_verification": {
-            "source": "user_feedback_2026_10_18",
-            "confirmed_version": "1.0.0",
-            "current_environment_login_and_logon_auto_login": "confirmed",
+            "source": "previous_field_testing",
+            "bjut_main_campus_wifi_auto_login": "confirmed_in_prior_release",
             "current_release_performance": "pending_retest",
             "other_computers_and_regions": "not_verified",
-            "wired_real_login": "pending",
+            "bjut_wired_manual_login": "confirmed_in_prior_release",
+            "current_release_wired_auto_login": "pending",
         },
-        "protocol_detection": "eportal_wifi_and_https_drcom_wired",
+        "protocol_detection": "eportal_wifi_and_https_drcom_or_eportal_wired",
         "distribution_defaults": {
             "network_profiles": "empty",
             "credentials_included": False,
             "automatic_authentication": False,
+            "background_monitor_on_app_open": True,
             "startup_task_included": False,
             "runtime_data_included": False,
         },
